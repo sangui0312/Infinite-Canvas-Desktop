@@ -1,0 +1,2 @@
+# Preserve copied source and runtime license bytes across Windows checkouts.
+* -text

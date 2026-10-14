@@ -1,0 +1,101 @@
+{
+  "name": "infinite-canvas-desktop",
+  "version": "0.2.0",
+  "private": true,
+  "description": "Independent Windows desktop app for Infinite Canvas",
+  "author": "Infinite Canvas",
+  "main": "desktop/main.cjs",
+  "scripts": {
+    "dev": "electron .",
+    "test": "node --test tests/*.test.cjs",
+    "dist:dir": "electron-builder --win --x64 --dir --publish never",
+    "dist:win": "electron-builder --win nsis --x64 --publish never"
+  },
+  "devDependencies": {
+    "electron": "44.7.2",
+    "electron-builder": "26.15.3"
+  },
+  "build": {
+    "appId": "site.sansheng.infinitecanvas.desktop",
+    "productName": "Infinite Canvas",
+    "asar": true,
+    "directories": {
+      "output": "dist"
+    },
+    "files": [
+      "desktop/**/*",
+      "package.json"
+    ],
+    "extraResources": [
+      {
+        "from": "backend",
+        "to": "backend",
+        "filter": [
+          "**/*",
+          "!**/__pycache__/**",
+          "!**/*.pyc",
+          "!**/*.pyo",
+          "!API/**",
+          "!data/**",
+          "!assets/**",
+          "!output/**",
+          "!logs/**",
+          "!history.json",
+          "!global_config.json",
+          "!nas_config.json",
+          "!media_gateway.json",
+          "!**/.env",
+          "!tools/dreamina/home/**",
+          "!tools/dreamina/dreamina.exe",
+          "!**/*.bak*",
+          "!**/*backup*",
+          "!**/*.broken-before-*",
+          "!**/*.stable-before-*"
+        ]
+      },
+      {
+        "from": "LICENSE",
+        "to": "LICENSE"
+      },
+      {
+        "from": "THIRD_PARTY_NOTICES.md",
+        "to": "THIRD_PARTY_NOTICES.md"
+      }
+    ],
+    "win": {
+      "target": [
+        "nsis"
+      ],
+      "artifactName": "InfiniteCanvas-Desktop-${version}-${arch}.${ext}",
+      "signAndEditExecutable": true,
+      "signExecutable": false,
+      "icon": "desktop/icon.ico"
+    },
+    "nsis": {
+      "include": "build/installer.nsh",
+      "oneClick": false,
+      "perMachine": false,
+      "allowToChangeInstallationDirectory": true,
+      "deleteAppDataOnUninstall": false,
+      "createDesktopShortcut": true
+    },
+    "publish": [
+      {
+        "provider": "github",
+        "owner": "sangui0312",
+        "repo": "Infinite-Canvas-Desktop",
+        "releaseType": "release",
+        "private": false
+      }
+    ]
+  },
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/sangui0312/Infinite-Canvas-Desktop.git"
+  },
+  "homepage": "https://github.com/sangui0312/Infinite-Canvas-Desktop#readme",
+  "license": "SEE LICENSE IN LICENSE",
+  "dependencies": {
+    "electron-updater": "6.8.9"
+  }
+}

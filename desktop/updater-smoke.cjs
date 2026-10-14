@@ -1,0 +1,34 @@
+'use strict';
+const assert = require('node:assert/strict');
+const fs = require('node:fs');
+const path = require('node:path');
+async function run({win, root, waitFor}) {
+  const execute = script => win.webContents.executeJavaScript(script);
+  const actual = await execute('window.desktopBridge.updates.getState()');
+  assert.equal(actual.currentVersion, '0.2.0');
+  await execute('window.DesktopUpdates.open()');
+  assert.equal(await execute('document.querySelector("#project-update-modal").hidden'), false);
+  assert.equal(await execute('document.querySelector("#project-update-rollback-btn").hidden'), true);
+  assert.equal(await execute('document.querySelector("#update-source-list").hidden'), true);
+  assert.equal(await execute('document.querySelector("#full-install-download-btn").href'), 'https://github.com/sangui0312/Infinite-Canvas-Desktop/releases');
+  const next = {currentVersion:'0.2.0',phase:'available',version:'0.2.1',releaseName:'Desktop test',notes:'<img src=x onerror="window.__unsafeRelease=true">'};
+  win.webContents.send('desktop:update-state', next);
+  await waitFor(() => execute('document.querySelector("#project-update-notes-version").textContent === "0.2.1"'), 'desktop release UI');
+  assert.equal(await execute('document.querySelector("#project-update-notes-list img") === null && !window.__unsafeRelease'), true);
+  assert.equal(await execute('document.querySelector("#project-update-confirm-btn").disabled'), false);
+  win.webContents.send('desktop:update-state', {...next,phase:'downloading',percent:42,total:1000000,transferred:420000});
+  await waitFor(() => execute('document.querySelector("#desktop-update-progress").value === 42'), 'desktop progress');
+  assert.equal(await execute('document.querySelector("#project-update-confirm-btn").disabled'), true);
+  win.webContents.send('desktop:update-state', {...next,phase:'downloaded',percent:100,total:1000000,transferred:1000000});
+  await waitFor(() => execute('document.querySelector("#project-update-confirm-text").textContent.includes("重启并安装")'), 'desktop install choice');
+  assert.equal(await execute('document.querySelector("#project-update-confirm-btn").disabled'), false);
+  await execute('window.DesktopUpdates.close("project-update-modal")');
+  assert.equal(await execute('document.querySelector("#project-update-modal").hidden'), true);
+  win.webContents.send('desktop:update-state', actual);
+  await execute('window.DesktopUpdates.open()');
+  await new Promise(resolve => setTimeout(resolve, 200));
+  fs.writeFileSync(path.join(root,'github-update.png'), (await win.webContents.capturePage()).toPNG());
+  await execute('window.DesktopUpdates.close("project-update-modal")');
+  return {source:'GitHub Releases',version:actual.currentVersion,legacyControlsHidden:true,notesEscaped:true,progress:true,manualInstall:true};
+}
+module.exports = {run};
