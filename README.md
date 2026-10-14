@@ -107,6 +107,7 @@ ModelScope、RunningHub、火山引擎的内置平台入口按现有规则隐藏
 git clone https://github.com/sangui0312/Infinite-Canvas-Desktop.git
 cd Infinite-Canvas-Desktop
 python -X utf8 tools/prepare_runtime.py
+$env:NODE_OPTIONS = '--use-system-ca'
 npm ci
 node --use-system-ca node_modules/electron/install.js
 npm run dev
