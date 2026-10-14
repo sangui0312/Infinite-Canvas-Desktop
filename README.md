@@ -8,9 +8,9 @@
 
 ## 项目来源
 
-原作者：[哔哩哔哩 UID 78652351](https://space.bilibili.com/78652351)。
+原项目：[hero8152/Infinite-Canvas](https://github.com/hero8152/Infinite-Canvas)。原作者：[GitHub · hero8152](https://github.com/hero8152) / [哔哩哔哩 UID 78652351](https://space.bilibili.com/78652351)。
 
-桌面版本基于 [liangjian785-debug/Infinite-Canvas](https://github.com/liangjian785-debug/Infinite-Canvas) 的代码进行二次开发，由 [sangui0312](https://github.com/sangui0312) 维护。感谢原作者及贡献者提供的画布能力。本项目沿用上游 [LICENSE](LICENSE)。
+本仓库是 Infinite Canvas 的二次开发桌面版本，由 [sangui0312](https://github.com/sangui0312) 维护桌面适配与发布。感谢原作者及贡献者提供的画布能力。本项目沿用上游 [LICENSE](LICENSE)。
 
 ## 功能
 
@@ -183,6 +183,6 @@ node tools/check_media.cjs
 
 ## 许可证与致谢
 
-原作者：[哔哩哔哩 UID 78652351](https://space.bilibili.com/78652351)。桌面版本由 [sangui0312](https://github.com/sangui0312) 维护，遵循上游 [LICENSE](LICENSE) 中的使用、二次开发开源及署名要求。商业用途请联系相应权利人取得授权。
+原项目：[hero8152/Infinite-Canvas](https://github.com/hero8152/Infinite-Canvas)。原作者：[GitHub · hero8152](https://github.com/hero8152) / [哔哩哔哩 UID 78652351](https://space.bilibili.com/78652351)。桌面版本由 [sangui0312](https://github.com/sangui0312) 维护，遵循上游 [LICENSE](LICENSE) 中的使用、二次开发开源及署名要求。商业用途请联系相应权利人取得授权。
 
 第三方组件遵循各自许可证，来源与说明见 [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md) 及随包许可文件。
