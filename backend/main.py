@@ -875,22 +875,6 @@ def default_api_providers():
     # 独立入口平台强制保留，其他平台均可自定义增删
     return [
         {
-            "id": "modelscope",
-            "name": "ModelScope",
-            "base_url": MODELSCOPE_CHAT_BASE_URL,
-            "protocol": "openai",
-            "image_request_mode": "openai",
-            "image_generation_endpoint": "",
-            "image_edit_endpoint": "",
-            "enabled": True,
-            "primary": False,
-            "image_models": MODELSCOPE_DEFAULT_IMAGE_MODELS,
-            "chat_models": MODELSCOPE_CHAT_MODELS,
-            "video_models": [],
-            "ms_loras": MODELSCOPE_DEFAULT_LORAS,
-            "ms_defaults_version": MODELSCOPE_DEFAULTS_VERSION,
-        },
-        {
             "id": "runninghub",
             "name": "RunningHub",
             "base_url": RUNNINGHUB_DEFAULT_BASE_URL,
@@ -930,25 +914,7 @@ def default_api_providers():
 
 def merge_default_api_providers(providers, inject_missing=True):
     merged = [dict(item) for item in providers]
-    # 强制保留独立入口平台（不再强制 comfly）
-    ms_default = next((d for d in default_api_providers() if d["id"] == "modelscope"), None)
-    if ms_default:
-        current = next((item for item in merged if item.get("id") == "modelscope"), None)
-        if not current:
-            if inject_missing:
-                merged.append(ms_default)
-        else:
-            if not current.get("base_url"):
-                current["base_url"] = ms_default["base_url"]
-            seeded_version = int(current.get("ms_defaults_version") or 0)
-            if seeded_version < MODELSCOPE_DEFAULTS_VERSION:
-                image_models = model_list_from_values([*MODELSCOPE_DEFAULT_IMAGE_MODELS, *(current.get("image_models") or [])])
-                chat_models = model_list_from_values([*MODELSCOPE_DEFAULT_CHAT_MODELS, *(current.get("chat_models") or [])])
-                loras = normalize_ms_loras([*MODELSCOPE_DEFAULT_LORAS, *(current.get("ms_loras") or [])])
-                current["image_models"] = image_models
-                current["chat_models"] = chat_models
-                current["ms_loras"] = loras
-                current["ms_defaults_version"] = MODELSCOPE_DEFAULTS_VERSION
+    # 强制保留独立入口平台（不再强制 comfly）；ModelScope 不再作为内置平台注入。
     rh_default = load_static_runninghub_provider() or next((d for d in default_api_providers() if d["id"] == "runninghub"), None)
     if rh_default:
         current = next((item for item in merged if item.get("id") == "runninghub"), None)

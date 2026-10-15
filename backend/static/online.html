@@ -401,7 +401,7 @@ function gpt25ExtParams(source={}, refs=[]){
             return (list || []).map(item => String(item || '').trim()).filter(item => item && !seen.has(item) && seen.add(item));
         }
         function imageProviders(){
-            const list = (apiProviders || []).filter(p => p.enabled !== false && (
+            const list = (apiProviders || []).filter(p => p.enabled !== false && String(p.id || '').toLowerCase() !== 'modelscope' && (
                 (p.image_models || []).length || (p.rh_apps || []).length || (p.rh_workflows || []).length
             ));
             return list.length ? list : [{id:'comfly', name:'Comfly', image_models:[models.gpt, models.nano]}];

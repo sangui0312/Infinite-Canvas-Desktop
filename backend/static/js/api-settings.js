@@ -156,25 +156,6 @@ let providerDragId = '';
 // category: 'allround'（全能）| 'value'（性价比）| 'free'（免费），推荐面板按分组分节展示
 const RECOMMENDED_APIS = [
     {
-        id:'exellome',
-        name:'EXELLOME',
-        category:'value',
-        base_url:'https://new.exellome.online',
-        // 异步协议 + 异步生图模式：提交 /v1/videos、轮询 /v1/videos/{id}，本地参考图走 multipart 直传
-        protocol:'apimart',
-        image_request_mode:'openai-video-proxy',
-        register_url:'https://new.exellome.online/register?aff=r2dZ',
-        tagKeys:['GPT-Image2','Nano-Banana'],
-        icons:['IMG'],
-        summaryKey:'api.recommendExellomeSummary',
-        perks:[{key:'api.recommendExellome2k4k'}],
-        keyHint:'使用 VIP 分组',
-        advantages:['稳定输出 GPT-Image2 和 Nano Banana 的 2K/4K', '异步协议适合长任务', '预填全系图像模型'],
-        image_models:['gpt-image2-2k', 'gpt-image2-4k', 'Nano-Banana-2-2k', 'Nano-Banana-2-4k', 'Nano-Banana-Pro-2k', 'Nano-Banana-Pro-4k'],
-        chat_models:[],
-        video_models:[]
-    },
-    {
         name:'APIMART',
         category:'allround',
         base_url:'https://api.apimart.ai',
@@ -2183,14 +2164,6 @@ function renderRecommendApi(){
         </div>
         <div class="recommend-api-body recommend-inline-body">${html}</div>
         <div class="recommend-note">${escapeHtml(tr('api.recommendApiNote'))}</div>
-        <div class="recommend-note recommend-seedance-private-note">
-            <span class="recommend-seedance-private-icon"><i data-lucide="video" class="w-3.5 h-3.5"></i></span>
-            <span class="recommend-seedance-private-text">${escapeHtml(tr('api.recommendSeedancePrivateNote'))}</span>
-            <a class="recommend-seedance-private-link" href="https://space.bilibili.com/78652351" target="_blank" rel="noopener noreferrer">
-                <i data-lucide="send" class="w-3.5 h-3.5"></i>
-                <span>${escapeHtml(tr('api.recommendSeedancePrivateAction'))}</span>
-            </a>
-        </div>
     `;
     refreshIcons();
 }
