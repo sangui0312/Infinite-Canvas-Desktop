@@ -31,7 +31,7 @@ class DesktopUpdater {
     updater.requestHeaders = null;
     updater.autoDownload = false; updater.autoInstallOnAppQuit = false;
     updater.autoRunAppAfterInstall = true;
-    updater.allowDowngrade = false; updater.allowPrerelease = false; updater.disableDifferentialDownload = true;
+    updater.allowDowngrade = false; updater.allowPrerelease = false; updater.disableDifferentialDownload = false;
     updater.disableWebInstaller = true;
     updater.setFeedURL({ ...FEED });
     updater.on('update-available', info => { if (this.state.phase === 'checking') this.available(info); });

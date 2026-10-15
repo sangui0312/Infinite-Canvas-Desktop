@@ -158,7 +158,12 @@ class DesktopGuard:
             # Queue/background registries and a running HTTP request can describe
             # the same job; use the larger count to avoid counting it twice.
             running = max(running, self.inflight_generation)
-            return await self.respond(send, 200, {"ok": True, "protocol": PROTOCOL, "instance": self.instance, "pid": os.getpid(), "version": self.module.current_app_version(), "active_tasks": running})
+            running += getattr(getattr(self.module, "DESKTOP_IMPORT_MANAGER", None), "active", 0)
+            payload = {"ok": True, "protocol": PROTOCOL, "instance": self.instance, "pid": os.getpid(), "version": self.module.current_app_version(), "active_tasks": running}
+            base = getattr(self.module, "BASE_DIR", "")
+            if base and (Path(base) / "desktop-app-version.json").is_file():
+                payload["desktop_version"] = json.loads((Path(base) / "desktop-app-version.json").read_text(encoding="utf-8"))["version"]
+            return await self.respond(send, 200, payload)
         if kind == "http" and scope["path"] == "/desktop/shutdown" and scope["method"] == "POST":
             await self.respond(send, 200, {"ok": True})
             self.stop()
@@ -269,6 +274,13 @@ def main():
     module = importlib.util.module_from_spec(spec)
     sys.modules[spec.name] = module
     spec.loader.exec_module(module)
+    migration_file = app_dir / "legacy_import.py"
+    if migration_file.is_file():
+        migration_spec = importlib.util.spec_from_file_location("ic_legacy_import", migration_file)
+        migration = importlib.util.module_from_spec(migration_spec)
+        sys.modules[migration_spec.name] = migration
+        migration_spec.loader.exec_module(migration)
+        module.DESKTOP_IMPORT_MANAGER = migration.install(module)
     if getattr(module, "DESKTOP_PROTOCOL_VERSION", None) != PROTOCOL:
         raise RuntimeError("Backend is not compatible with this desktop shell")
     asyncio.run(serve(module, token, instance, parent_pid, lifecycle))

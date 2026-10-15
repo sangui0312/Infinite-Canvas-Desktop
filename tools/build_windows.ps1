@@ -1,4 +1,4 @@
-param([switch]$InstallDependencies)
+param([switch]$InstallDependencies, [string]$BaselineManifest)
 $ErrorActionPreference = 'Stop'
 $projectRoot = Split-Path -Parent $PSScriptRoot
 $previousOptions = $env:NODE_OPTIONS
@@ -16,12 +16,18 @@ try {
     }
     & npm.cmd test
     if ($LASTEXITCODE -ne 0) { throw 'Shell checks failed.' }
-    & backend/python/python.exe -B -X utf8 -m unittest discover -s tests -p test_desktop_backend.py
+    & backend/python/python.exe -B -X utf8 -m unittest discover -s tests -p 'test_*.py'
     if ($LASTEXITCODE -ne 0) { throw 'Backend checks failed.' }
     & npm.cmd run dist:win
     if ($LASTEXITCODE -ne 0) { throw 'Windows packaging failed.' }
     & node tools/write_update_notes.cjs
     if ($LASTEXITCODE -ne 0) { throw 'Desktop update announcement validation failed.' }
+    if ($BaselineManifest) {
+        & backend/python/python.exe -B -X utf8 tools/build_hybrid_release.py --baseline $BaselineManifest
+    } else {
+        & backend/python/python.exe -B -X utf8 tools/build_hybrid_release.py
+    }
+    if ($LASTEXITCODE -ne 0) { throw 'Hybrid release metadata failed.' }
     & backend/python/python.exe -B -X utf8 tools/verify_payload.py
     if ($LASTEXITCODE -ne 0) { throw 'Payload checks failed.' }
     & node tools/run_smoke.cjs --packaged

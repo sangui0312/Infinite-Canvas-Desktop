@@ -43,33 +43,39 @@
 
 ### 从 Web 版本迁移
 
-在原应用中导出项目或画布，再通过桌面版的导入功能恢复。桌面版使用独立数据目录，API 配置需要在本机重新填写。
+在 **更多设置 → 从旧 Web 导入** 填写旧端地址，检测连接后选择项目并开始下载。旧端必须保持启动，迁移期间请暂停编辑待导入项目。桌面版直接读取画布和素材，绕过旧项目 ZIP 导出的 2000 条资源限制。
+
+下载完成后点击“完成导入”，软件创建新项目并将素材改为本地地址；不覆盖现有项目，不写入旧服务器，也不迁入 API 密钥和登录状态。缺失素材会列明，可重试下载或明确选择导入已有内容。中断后保留任务记录，能够复用经校验且旧端 ETag 未变化的下载文件。旧端需要登录或接口不兼容时会提示，不自动绕过访问限制。
+
+仍可使用项目或画布 ZIP 导入；旧备份中没有打包的素材，无法仅靠导入程序恢复。
 
 ## 软件更新
 
-更新源为本仓库的 GitHub Releases，使用 `electron-updater` 检查版本并验证安装包完整性。
+更新源为本仓库的 GitHub Releases。0.3.0 起先读取 `hybrid-update.json`，根据桌面基础版本、功能版本及兼容条件选择更新方式：
+
+- **功能文件更新**：只下载精确匹配起始版本的改动文件包，逐文件校验、备份及应用新增/修改/删除操作。保存画布并停止服务后更新，启动健康检查失败会回滚；意外中断后的下次启动先恢复未确认事务。
+- **安装包更新**：桌面外壳、窗口桥接、安装器、Python 或基础依赖变化，或者缺少可用差异基线时，使用 `electron-updater` 安装升级。优先差分下载，由更新框架在差分不可用时回退完整下载。
+- **不匹配处理**：本地程序文件被修改或版本不满足文件包条件时，切换到安装包更新，不强行应用文件包。
 
 ```text
 软件更新 → 检查更新 → 查看公告 → 下载更新
-→ 完整性校验 → 重启并安装 → 保存画布与确认任务 → 安装并启动
+→ 校验 → 保存画布与确认任务 → 应用文件更新或重启安装 → 健康检查
 ```
 
 - 下载与安装分别确认，普通退出不会触发安装。
 - 完整安装包包含桌面壳、画布代码、Python 和工具依赖。
-- 桌面版本采用语义化版本号，例如 `0.2.0`；应用中的更新判断使用桌面版本。
+- 分别保存功能版本与桌面基础版本；界面默认显示当前功能版本，文件更新不会虚增外壳版本。
 - 更高版本首次启动时备份旧运行副本，服务健康检查失败时尝试恢复该副本。
 - 完整桌面版本的回退可使用 [历史 Releases](https://github.com/sangui0312/Infinite-Canvas-Desktop/releases)，操作前备份个人数据。
 
-**0.1.x 版本需要先手动安装 0.2.0 或更高版本一次，之后可使用应用内更新。**
+**混合更新需先安装一次 0.3.0 或更高的完整桌面版。首次引入该机制的版本仍走安装包升级；后续是否提供文件更新包由发布清单决定。**
 
 ## 数据存储与备份
 
-默认数据根目录为 `%LOCALAPPDATA%\InfiniteCanvas`：
+默认个人数据目录为安装文件夹内的 `InfiniteCanvasData`，例如 `D:\Infinite Canvas\InfiniteCanvasData`。在 **更多设置 → 数据存储** 中查看、打开或更改存放位置，也可以恢复默认位置。
 
 | 路径 | 用途 |
 | --- | --- |
-| `runtime\app` | 当前使用的后端和运行依赖 |
-| `runtime\shell-backup-*` | 桌面升级时保留的旧运行副本 |
 | `userdata\data` | 项目、画布与应用配置 |
 | `userdata\assets` | 素材、上传与生成结果 |
 | `userdata\output` | 输出文件 |
@@ -77,9 +83,15 @@
 | `userdata\workflows` | 用户工作流 |
 | `browser-profile` | 界面设置与桌面会话 |
 
-备份前关闭应用，复制整个 `userdata`；如需保留界面设置，同时备份 `browser-profile`。自定义素材目录需另外备份。API 配置可能包含密钥，请妥善保存。
+备份前关闭应用，复制整个 `InfiniteCanvasData`，包含 `userdata` 和 `browser-profile`。外部引用的自定义素材目录需另外备份。API 配置可能包含密钥，请妥善保存。
 
-卸载默认保留个人数据。旧运行副本的备份目前由用户手动管理。
+更改位置后，软件保存画布；有生成任务时需先完成任务，再重启并复制校验文件。目标目录已有其他资料时不覆盖或合并；恢复到本软件此前留下的迁移备份位置时，先将该旧备份另存，再迁入当前资料。空间不足、校验失败时继续使用原资料。迁移前的目录保留为备份，设置页显示各备份位置，需用户自行管理。
+
+旧版 `%LOCALAPPDATA%\InfiniteCanvas` 资料在首次启动新版时提示迁移，也可暂时沿用。缺失的自定义磁盘不会被空资料替代。不可写的安装位置会提示选择其他数据目录。
+
+卸载页面显示当前个人数据路径，**同时删除个人数据默认不勾选**。勾选后仅删除当前安装拥有的专用数据目录；旧迁移备份、其他安装的资料以及外部引用素材均保留。静默卸载与在线升级始终保留个人资料。重新安装到原位置会继续读取保留的路径配置。
+
+运行文件按安装路径独立放在 `%LOCALAPPDATA%\InfiniteCanvasInstallations\<安装标识>\runtime`，路径指针保存在同目录的 `storage.ini`。更换个人资料位置不会使不同安装版本共用运行文件。卸载普通软件时清理其运行文件；保留资料时保留路径指针，便于重装读取。
 
 ## 技术结构
 
@@ -157,7 +169,7 @@ pwsh -File tools/build_windows.ps1
 
 ```powershell
 npm test
-backend/python/python.exe -B -X utf8 -m unittest discover -s tests -p test_desktop_backend.py
+backend/python/python.exe -B -X utf8 -m unittest discover -s tests -p 'test_*.py'
 node tools/run_smoke.cjs --packaged
 node tools/check_media.cjs
 ```
@@ -166,11 +178,11 @@ node tools/check_media.cjs
 
 ## 发布流程
 
-1. 更新 `package.json`、`package-lock.json` 和 `backend/static/desktop-update-notes.json` 的桌面版本与公告。
+1. 更新 `package.json`、`package-lock.json`、`backend/desktop-app-version.json` 和 `backend/static/desktop-update-notes.json` 的版本与公告。基础兼容能力改变时更新 `minimumShell`。
 2. 运行依赖变化时，更新运行包及 `runtime-manifest.json` 中的地址、大小与哈希。
-3. 执行构建和验证，为安装包等发布文件生成 `SHA256SUMS.txt`。
+3. 执行构建和验证，为安装包等发布文件生成 `SHA256SUMS.txt`。构建脚本生成 `hybrid-update.json` 和 `release-tree.json`；提供上一版本的 `-BaselineManifest <release-tree.json>` 时，仅在基础文件与配置完全一致时生成文件差异 ZIP，否则自动使用安装包模式。保留每次发布的清单作为下次构建基线。
 4. 推送源码，为对应提交创建 `v<版本>` 标签及草稿 Release。
-5. 上传完整安装包、blockmap、`latest.yml`、校验文件及所需依赖和来源附件。
+5. 每次 Release 都上传完整安装包、blockmap、`latest.yml`、`hybrid-update.json`、`release-tree.json`、可选文件差异 ZIP、校验文件及所需依赖和来源附件，保持完整安装与两种更新路线可用。
 6. 核对附件与哈希后公开 Release，再验证匿名下载和在线版本检测。
 
 构建命令默认不发布，发布工作由维护者执行。API 配置、个人素材、登录信息、缓存与测试数据排除在 Git 和安装包之外。

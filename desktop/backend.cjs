@@ -6,6 +6,7 @@ const net = require('node:net');
 const { spawn } = require('node:child_process');
 const { randomUUID, randomBytes } = require('node:crypto');
 const { EventEmitter } = require('node:events');
+const { businessVersion } = require('./file-updates.cjs');
 const PORT = 31300;
 const ORIGIN = `http://127.0.0.1:${PORT}`;
 function compareVersions(a, b) {
@@ -36,10 +37,10 @@ function requestJSON(route, token, method = 'GET', timeout = 2500) {
   });
 }
 class Backend extends EventEmitter {
-  constructor(template, root) {
+  constructor(template, root, personalRoot = root) {
     super(); this.template = template; this.root = root;
     this.appDir = path.join(root, 'runtime', 'app');
-    this.dataDir = path.join(root, 'userdata');
+    this.dataDir = path.join(personalRoot, 'userdata');
     this.child = null; this.stopping = false;
     this.shellVersion = require('../package.json').version;
     this.markerFile = path.join(root, 'runtime', 'shell-template.json');
@@ -62,6 +63,8 @@ class Backend extends EventEmitter {
       return;
     }
     if (compareVersions(this.shellVersion, installedVersion) <= 0 || this.pendingShellUpgrade) return;
+    if (compareVersions(businessVersion(this.appDir, installedVersion), businessVersion(this.template, this.shellVersion)) > 0)
+      throw new Error('当前功能版本高于安装包，已拒绝覆盖。请安装更新的完整版本。');
     const staging = `${this.appDir}.shell-upgrade`;
     const backup = path.join(path.dirname(this.appDir), `shell-backup-${installedVersion}-${Date.now()}`);
     fs.rmSync(staging, { recursive: true, force: true });

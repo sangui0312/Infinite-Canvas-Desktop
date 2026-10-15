@@ -1,6 +1,12 @@
 'use strict';
 const { contextBridge, ipcRenderer } = require('electron');
 contextBridge.exposeInMainWorld('desktopBridge', Object.freeze({
+  storage: Object.freeze({
+    info: () => ipcRenderer.invoke('desktop:storage-info'),
+    open: () => ipcRenderer.invoke('desktop:storage-open'),
+    change: () => ipcRenderer.invoke('desktop:storage-change', false),
+    reset: () => ipcRenderer.invoke('desktop:storage-change', true)
+  }),
   prompt: (message, value = '') => ipcRenderer.sendSync('desktop:prompt', String(message).slice(0, 4000), String(value).slice(0, 20000)),
   updates: Object.freeze({
     getState: () => ipcRenderer.invoke('desktop:update-get-state'),

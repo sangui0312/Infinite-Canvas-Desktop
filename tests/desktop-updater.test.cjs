@@ -20,7 +20,7 @@ test('fixed public provider and explicit full-installer settings', () => {
   const { updater, controller } = fixture();
   assert.deepEqual(updater.feed, { provider: 'github', owner: 'sangui0312', repo: 'Infinite-Canvas-Desktop', private: false, releaseType: 'release' });
   for (const key of ['autoDownload', 'autoInstallOnAppQuit', 'allowDowngrade', 'allowPrerelease']) assert.equal(updater[key], false);
-  assert.equal(updater.disableDifferentialDownload, true); assert.equal(updater.logger, null);
+  assert.equal(updater.disableDifferentialDownload, false); assert.equal(updater.logger, null);
   assert.equal(updater.requestHeaders, null); assert.equal(updater.autoRunAppAfterInstall, true);
   assert.equal(controller.getState().repositoryUrl, REPOSITORY_URL);
   const state = controller.getState(); state.phase = 'downloaded'; assert.equal(controller.getState().phase, 'idle');

@@ -4,8 +4,8 @@
     if (!window.desktopBridge) return;
     const repo = 'https://github.com/sangui0312/Infinite-Canvas-Desktop';
     const bridge = window.desktopBridge.updates;
-    let state = { currentVersion: '0.2.1', phase: 'idle' };
-    let localNotes = { version: '0.2.1', notes: '' };
+    let state = { currentVersion: '0.3.0', phase: 'idle' };
+    let localNotes = { version: '0.3.0', notes: '' };
     let notesPromise;
     let pending = false;
     let revision = 0;
@@ -37,7 +37,7 @@
         render();
     }
     function render() {
-        const current = state.currentVersion || '0.2.1';
+        const current = state.currentVersion || '0.3.0';
         const version = newer() ? state.version : (localNotes.version || current);
         const notes = newer() ? String(state.notes || '') : String(localNotes.notes || '');
         const messages = {
@@ -45,13 +45,13 @@
             checking: t('正在检查 GitHub Releases…', 'Checking GitHub Releases…'),
             available: t('发现新版本，请查看公告后下载。', 'A new version is available. Review the notes before downloading.'),
             'not-available': t('当前已是最新桌面版本。', 'You have the latest desktop version.'),
-            downloading: t('正在下载完整桌面更新包…', 'Downloading the complete desktop update…'),
+            downloading: state.route === 'files' ? t('正在下载功能更新文件…', 'Downloading changed program files…') : t('正在下载桌面安装更新，优先使用差分…', 'Downloading the desktop installer, preferring differential transfer…'),
             downloaded: t('下载及完整性校验完成。点击“重启并安装”继续。', 'Download and integrity verification complete. Restart and install to continue.'),
             installing: t('正在准备重启并安装…', 'Preparing to restart and install…'),
             error: String(state.error || t('更新失败，请检查网络后重试。', 'Update failed. Check your network and retry.'))
         };
         text('project-update-title', t('软件更新', 'Software update'));
-        text('project-update-copy', t(`当前桌面版本 ${current}。更新来源：GitHub Releases（${repo}）。下载完整桌面版本，校验完成后由你选择安装。`, `Current desktop version ${current}. Source: GitHub Releases (${repo}). Download the complete desktop version, then choose when to install after verification.`));
+        text('project-update-copy', t(`当前版本 ${current}。更新来源：GitHub Releases。${state.route === 'files' ? '本次仅下载变化的程序文件，校验后重启后台服务。' : '本次使用桌面安装包，优先差分下载，不可用时下载完整安装包。'}个人资料始终保留。`, `Current version ${current}. Source: GitHub Releases. ${state.route === 'files' ? 'Only changed program files will be downloaded.' : 'Installer updates prefer differential download and fall back to the full installer.'} Personal data is retained.`));
         text('sidebar-update-version', current);
         text('project-update-notes-title', state.releaseName || t('桌面版本公告', 'Desktop release notes'));
         text('project-update-notes-version', version || '');
@@ -70,7 +70,7 @@
         if ($('project-update-rollback-btn')) { $('project-update-rollback-btn').hidden = true; $('project-update-rollback-btn').style.display = 'none'; }
         if ($('project-update-copy')) $('project-update-copy').style.overflowWrap = 'anywhere';
         text('project-update-summary-title', messages[state.phase] || messages.idle);
-        text('project-update-summary-text', t('下载失败会保留当前版本；运行副本更新失败可恢复。完整软件回退请安装 GitHub 历史版本。', 'A failed download keeps the current version; a failed runtime-copy update can be restored. To downgrade the complete app, install a historical GitHub release.'));
+        text('project-update-summary-text', state.notice || t('更新前保存画布并确认运行任务；文件更新启动失败会恢复旧程序。文件包不适用时自动切换为安装包更新。', 'Save canvases and confirm running tasks before applying. Failed file updates restore the previous program. Incompatible patches switch to installer updates.'));
         const summary = $('project-update-summary');
         if (summary) { summary.className = 'update-modal-summary ' + (state.phase === 'error' ? 'fail' : state.phase === 'downloaded' ? 'ok' : 'warn'); summary.setAttribute('role', 'status'); summary.setAttribute('aria-live', 'polite'); }
         let progress = $('desktop-update-progress');
@@ -148,6 +148,7 @@
         modal.querySelector('.studio-modal-close')?.focus();
     }
     function close(id) {
+        if (state.phase === 'installing') return;
         const modal = $(id);
         if (!modal || modal.hidden) return;
         modal.hidden = true;

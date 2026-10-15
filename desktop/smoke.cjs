@@ -13,7 +13,7 @@ async function waitFor(check, label, timeout = 20000) {
   }
   throw new Error(`Smoke stage timed out: ${label}`);
 }
-async function run({ win, session, root, saveScript }) {
+async function run({ win, session, root, saveScript, updates, backend }) {
   currentStage = 'canvas-list';
   const execute = script => win.webContents.executeJavaScript(script);
   const legacyUpdateRequests = [];
@@ -31,6 +31,23 @@ async function run({ win, session, root, saveScript }) {
   const apiSettings = await require('./api-settings-smoke.cjs').run({win,root,waitFor});
   currentStage = 'github-updater';
   const githubUpdater = await require('./updater-smoke.cjs').run({win,root,waitFor});
+  currentStage = 'data-storage';
+  const storage = await execute(`(async()=>{
+    const info=await desktopBridge.storage.info();
+    document.querySelector('#desktop-storage-settings').click();
+    await new Promise(r=>setTimeout(r,100));
+    const modal=document.querySelector('#desktop-storage-modal');
+    return {path:info.path,visible:modal.open,text:modal.querySelector('#desktop-storage-path').textContent,actions:[...modal.querySelectorAll('button')].map(b=>b.textContent)};
+  })()`);
+  assert.equal(storage.path, root); assert.equal(storage.text, root); assert.equal(storage.visible, true);
+  assert.deepEqual(storage.actions, ['打开文件夹','更改位置','恢复默认位置','关闭']);
+  fs.writeFileSync(path.join(root,'data-storage.png'),(await win.webContents.capturePage()).toPNG());
+  await execute(`document.querySelector('#desktop-storage-modal').close()`);
+  currentStage = 'iframe-prompt';
+  currentStage = 'legacy-import';
+  const legacyImport = await require('./legacy-import-smoke.cjs').run({win,root,waitFor});
+  // Import refreshes the list iframe; wait for the prompt bridge to be attached.
+  await waitFor(()=>canvasFrame()?.executeJavaScript('typeof window.prompt === "function"').catch(()=>false),'list reloaded after legacy import');
   currentStage = 'iframe-prompt';
   const answer = await canvasFrame().executeJavaScript('window.prompt("Desktop smoke input", "initial")');
   assert.equal(answer, 'desktop-smoke-answer');
@@ -98,6 +115,8 @@ async function run({ win, session, root, saveScript }) {
   fs.writeFileSync(path.join(root,'sidebar-actions.png'),sidebar.toPNG());
   assert.deepEqual(legacyUpdateRequests, [], 'desktop must not request the legacy web updater');
   session.webRequest.onBeforeRequest(null);
-  return { projects: true, apiSettings, githubUpdater, legacyUpdateRequests:0, iframePrompt: true, canvases: results, closeSave: true, download: true, sidebarFourRows: true, screenshot: 'smoke.png' };
+  currentStage = 'hybrid-file-update';
+  const hybridFiles = await require('./hybrid-smoke.cjs').run({updates,backend,root});
+  return { projects: true, apiSettings, githubUpdater, dataStorage:true, legacyImport, hybridFiles, legacyUpdateRequests:0, iframePrompt: true, canvases: results, closeSave: true, download: true, sidebarFourRows: true, screenshot: 'smoke.png' };
 }
 module.exports = { run, getStage: () => currentStage };

@@ -35,7 +35,9 @@ def main():
                 'tools/ffmpeg/ffmpeg.exe', 'tools/ffmpeg/ffprobe.exe', 'py-libs/pytoshop/__init__.py',
                 'static/index.html', 'static/js/canvas.js', 'static/js/smart-canvas.js',
                 'static/js/api-settings.js', 'static/css/api-settings.css',
-                'static/js/desktop-updates.js', 'static/desktop-update-notes.json']
+                'static/js/desktop-updates.js', 'static/desktop-update-notes.json',
+                'legacy_import.py', 'desktop-app-version.json',
+                'static/js/desktop-storage.js', 'static/js/desktop-legacy-import.js']
     for rel in required:
         file = payload / rel
         if not file.is_file() or digest(file) != digest(source / rel):
