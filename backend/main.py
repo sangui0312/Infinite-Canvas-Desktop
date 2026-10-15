@@ -227,6 +227,11 @@ async def startup_event():
             load_psd_dependencies()
     except Exception as exc:
         print(f"PSD 依赖加载失败: {exc}")
+    # 数据目录下的 media_gateway.json（与 NAS 私有目录同格式）在启动时同步到 API/.env；失败不阻断启动。
+    try:
+        await asyncio.to_thread(sync_media_gateway_config_from_local_file)
+    except Exception as exc:
+        print(f"本地媒体网关配置自动同步失败: {exc}")
     # 自建媒体网关凭据从本机配置 NAS 的私有目录同步；失败不阻断启动。
     try:
         if not DESKTOP_MODE:
@@ -2186,6 +2191,51 @@ def sync_media_gateway_config_from_nas() -> Dict[str, Any]:
     finally:
         if session_connected:
             nas_disconnect()
+
+
+LOCAL_MEDIA_GATEWAY_CONFIG_NAME = "media_gateway.json"
+
+
+def local_media_gateway_config_path() -> str:
+    return os.path.join(USER_ROOT, LOCAL_MEDIA_GATEWAY_CONFIG_NAME)
+
+
+def sync_media_gateway_config_from_local_file() -> Dict[str, Any]:
+    """桌面端：从数据目录读取 media_gateway.json（与 NAS 私有目录同格式）写入 API/.env。
+
+    没有 NAS 同步的桌面环境放入一次配置文件即可让本地参考视频经自建媒体网关
+    上传为公网地址；失败不阻断启动，也不会清掉已有配置。
+    """
+    source = local_media_gateway_config_path()
+    if not os.path.isfile(source):
+        return {"status": "config_missing", "updated": []}
+    try:
+        with open(source, "r", encoding="utf-8-sig") as fh:
+            data = json.load(fh)
+        if not isinstance(data, dict):
+            raise ValueError("配置文件根节点必须是对象")
+        values = {key: str(data.get(key) or "").strip() for key in NAS_MEDIA_GATEWAY_CONFIG_KEYS}
+        missing = [key for key, value in values.items() if not value]
+        if missing:
+            raise ValueError("缺少字段：" + "、".join(missing))
+        if values["CLOUD_VIDEO_UPLOAD_SERVICE"].lower() != "selfhosted":
+            raise ValueError("CLOUD_VIDEO_UPLOAD_SERVICE 必须为 selfhosted")
+        values["CLOUD_VIDEO_UPLOAD_SERVICE"] = "selfhosted"
+        if values["SELF_HOSTED_VIDEO_UPLOAD_URL"] != SELF_HOSTED_VIDEO_UPLOAD_URL:
+            raise ValueError("SELF_HOSTED_VIDEO_UPLOAD_URL 不是允许的 HTTPS 上传地址")
+        updates = {
+            key: value
+            for key, value in values.items()
+            if read_api_env_value(key) != value or os.getenv(key, "") != value
+        }
+        if not updates:
+            return {"status": "already_configured", "updated": []}
+        update_env_values(updates)
+        print("[config] 本地媒体网关配置已同步：" + "、".join(updates.keys()))
+        return {"status": "applied", "updated": list(updates.keys())}
+    except Exception as exc:
+        print(f"[config] 本地媒体网关配置同步失败：{exc}")
+        return {"status": "failed", "updated": []}
 
 
 def nas_disconnect() -> None:
@@ -9663,7 +9713,7 @@ async def upload_video_for_apimart(client, provider, ref_url: str) -> str:
     except Exception as exc:
         cloud_error = str(exc)
     hint = "；".join(filter(None, [f"APIMart 上传：{last_error}" if last_error else "", f"公网图床上传：{cloud_error}" if cloud_error else ""]))
-    return f"ERR:本地视频无法转换为 APIMart 可访问的公网地址（{hint}）。可配置 PUBLIC_MEDIA_BASE_URL / PUBLIC_BASE_URL，或改用公网 http/https / asset:// 视频地址。"
+    return f"ERR:本地视频无法转换为 APIMart 可访问的公网地址（{hint}）。可配置 PUBLIC_MEDIA_BASE_URL / PUBLIC_BASE_URL，或改用公网 http/https / asset:// 视频地址；桌面版可把 media_gateway.json 放入数据目录后重启。"
 
 async def upload_audio_for_apimart(client, provider, ref_url: str) -> str:
     """把本地参考音频转换为 APIMart 可接受的 http/https 或 asset:// URL。
