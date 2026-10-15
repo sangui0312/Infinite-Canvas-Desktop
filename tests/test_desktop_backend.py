@@ -11,7 +11,7 @@ import sys
 import tempfile
 import types
 import unittest
-from unittest.mock import patch
+from unittest.mock import patch, AsyncMock
 import zipfile
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -85,20 +85,19 @@ class BackendTests(unittest.TestCase):
         for name in ("OUTPUT_DIR", "ASSETS_DIR", "HISTORY_FILE", "API_ENV_FILE", "DATA_DIR", "GLOBAL_CONFIG_FILE", "WORKFLOW_DIR", "STATIC_RUNNINGHUB_API_PROVIDERS_FILE", "STATIC_RUNNINGHUB_MODEL_REGISTRY_FILE"):
             self.assertIn(self.data_dir, Path(getattr(m, name)).parents)
         self.assertEqual(Path(m.STATIC_DIR), self.app_dir / "static")
-        self.assertEqual(m.NAS_CONFIG_ROOT, "")
+        self.assertFalse(hasattr(m, "NAS_CONFIG_ROOT"))
         self.assertTrue((self.data_dir / "workflows" / "default.json").is_file())
-        with patch.object(m, "sync_media_gateway_config_from_nas", side_effect=AssertionError("NAS must not run")):
-            asyncio.run(m.startup_event())
+        self.assertFalse(hasattr(m, "sync_media_gateway_config_from_nas"))
+        asyncio.run(m.startup_event())
         self.assertFalse((self.app_dir / "API").exists())
         self.assertFalse((self.app_dir / "data").exists())
         self.assertFalse((self.app_dir / "assets").exists())
 
-    def test_feed_compatibility_and_shell_version(self):
-        m = self.module
-        for manifest in ({}, {"desktop_compatible": True, "desktop_protocol": 1, "min_shell_version": "9.0.0"}, {"desktop_compatible": True, "desktop_protocol": 2, "min_shell_version": "0.1.0"}):
-            with self.assertRaises(RuntimeError):
-                m.require_desktop_update_manifest(manifest)
-        m.require_desktop_update_manifest({"desktop_compatible": True, "desktop_protocol": 1, "min_shell_version": "0.1.0"})
+    def test_removed_legacy_update_routes(self):
+        routes = {route.path for route in self.module.app.routes}
+        for route in ('/api/check-update', '/api/update', '/api/update-from-github', '/api/full-install-download', '/api/update-connectivity', '/api/update-connectivity/probe'):
+            self.assertNotIn(route, routes)
+        self.assertIn('github.com/sangui0312', self.module.app_info()['repo_url'])
 
     def test_synthetic_update_backup_restart_recover_preserves_userdata(self):
         m = self.module
@@ -109,35 +108,10 @@ class BackendTests(unittest.TestCase):
         api_file = Path(m.API_ENV_FILE)
         api_file.parent.mkdir(parents=True, exist_ok=True)
         api_file.write_text("TEST_ONLY_KEY=retained", encoding="utf-8")
-        archive_buffer = io.BytesIO()
-        with zipfile.ZipFile(archive_buffer, "w") as archive:
-            archive.writestr("main.py", original + b"\nSYNTHETIC_DESKTOP_UPDATE = True\n")
-            archive.writestr("VERSION", "2026.10.15")
-            archive.writestr("static/index.html", "new-page")
-        archive_data = archive_buffer.getvalue()
-        url = m.UPDATE_SERVER_BASE_URL + "/desktop-test.zip"
-        package = {"url": url, "size": len(archive_data), "sha256": hashlib.sha256(archive_data).hexdigest()}
-        manifest = {"version": "2026.10.15", "desktop_compatible": True, "desktop_protocol": 1, "min_shell_version": "0.1.0", "update_package": package, "full_package": package}
-        class Response:
-            status_code = 200
-            headers = {}
-            def __init__(self, url, body):
-                self.url, self.body = url, body
-            def iter_content(self, size):
-                for offset in range(0, len(self.body), size):
-                    yield self.body[offset:offset + size]
-            def close(self):
-                pass
-        def get(requested_url, **kwargs):
-            return Response(requested_url, json.dumps(manifest).encode() if requested_url.endswith("manifest.json") else archive_data)
-        output = io.StringIO()
-        with patch.object(m.requests, "get", side_effect=get), patch.object(m.subprocess, "Popen", side_effect=AssertionError("Desktop restart must not launch BAT/browser")), contextlib.redirect_stdout(output):
-            result = m.update_from_server(m.UpdateRequest(auto_restart=True, restart_delay=1))
-        self.assertTrue(result["restart_scheduled"])
-        self.assertIn('"type": "restart"', output.getvalue())
-        self.assertIn('"instance": "test-instance"', output.getvalue())
-        self.assertEqual((self.app_dir / "VERSION").read_text().strip(), "2026.10.15")
-        self.assertEqual((self.app_dir / "static" / "index.html").read_text(), "new-page")
+        backup = m.next_update_backup_dir('recovery-')
+        m.create_update_backup(backup, ['main.py', 'VERSION'], ['static/index.html'], kind='test')
+        (self.app_dir / 'VERSION').write_text('2026.10.15', encoding='utf-8')
+        (self.app_dir / 'static/index.html').write_text('new-page', encoding='utf-8')
         # Even a syntactically broken current module must be recoverable without import.
         (self.app_dir / "main.py").write_text("this is deliberately broken python !!!", encoding="utf-8")
         with patch.object(entry.importlib.util, "spec_from_file_location", side_effect=AssertionError("Recovery cannot import broken main")):
@@ -181,6 +155,74 @@ class BackendTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             entry.apply_deferred(self.app_dir, self.data_dir)
         pending.unlink()
+
+    def test_upload_fallback_order_and_secret_redaction(self):
+        m = self.module
+        secret = 'private-test-marker'
+        for success_at in range(4):
+            calls = []
+            def uploader(index):
+                async def upload(*args):
+                    calls.append(index)
+                    if index == success_at:
+                        return {'url': 'https://example.test/video.mp4', 'service': str(index)}
+                    raise m.HTTPException(status_code=503, detail=secret)
+                return upload
+            with patch.dict(os.environ, {'CLOUD_VIDEO_UPLOAD_SERVICE': 'selfhosted'}), patch.object(m, 'local_media_path_for_cloud_upload', return_value='test.mp4'), patch.object(m, 'validate_video_file', return_value={}), patch.object(m, 'upload_video_to_selfhosted', side_effect=uploader(0)), patch.object(m, 'upload_video_to_litterbox', side_effect=uploader(1)), patch.object(m, 'upload_video_to_temp_sh', side_effect=uploader(2)):
+                if success_at < 3:
+                    result = asyncio.run(m.upload_local_video_to_cloud('/assets/test.mp4'))
+                    self.assertEqual(result['service'], str(success_at))
+                else:
+                    with self.assertRaises(m.HTTPException) as failed:
+                        asyncio.run(m.upload_local_video_to_cloud('/assets/test.mp4'))
+                    self.assertNotIn(secret, failed.exception.detail)
+                    self.assertIn('selfhosted', failed.exception.detail)
+                    self.assertIn('litterbox', failed.exception.detail)
+                    self.assertIn('temp.sh', failed.exception.detail)
+            self.assertEqual(calls, list(range(min(success_at + 1, 3))))
+
+    def test_upload_transport_failure_and_explicit_service(self):
+        m = self.module
+        with patch.dict(os.environ, {'CLOUD_VIDEO_UPLOAD_SERVICE': 'selfhosted'}), patch.object(m, 'local_media_path_for_cloud_upload', return_value='test.mp4'), patch.object(m, 'validate_video_file', return_value={}), patch.object(m, 'upload_video_to_selfhosted', new_callable=AsyncMock) as gateway, patch.object(m, 'upload_video_to_litterbox', new_callable=AsyncMock) as litterbox, patch.object(m, 'upload_video_to_temp_sh', new_callable=AsyncMock) as temp:
+            gateway.side_effect = RuntimeError('private-test-marker')
+            litterbox.side_effect = TimeoutError('private-test-marker')
+            temp.return_value = {'service': 'temp.sh'}
+            self.assertEqual(asyncio.run(m.upload_local_video_to_cloud('/assets/test.mp4'))['service'], 'temp.sh')
+            gateway.reset_mock()
+            litterbox.reset_mock()
+            temp.reset_mock()
+            litterbox.side_effect = None
+            litterbox.return_value = {'service': 'litterbox'}
+            self.assertEqual(asyncio.run(m.upload_local_video_to_cloud('/assets/test.mp4', 'litterbox'))['service'], 'litterbox')
+            gateway.assert_not_awaited()
+            temp.assert_not_awaited()
+            litterbox.assert_awaited_once()
+
+    def test_invalid_video_never_reaches_any_upload_service(self):
+        m = self.module
+        with patch.object(m, 'local_media_path_for_cloud_upload', return_value='test.mp4'), patch.object(m, 'validate_video_file', side_effect=ValueError('invalid')), patch.object(m, 'upload_video_to_selfhosted', new_callable=AsyncMock) as gateway, patch.object(m, 'upload_video_to_litterbox', new_callable=AsyncMock) as litterbox, patch.object(m, 'upload_video_to_temp_sh', new_callable=AsyncMock) as temp:
+            with self.assertRaises(m.HTTPException) as failed:
+                asyncio.run(m.upload_local_video_to_cloud('/assets/test.mp4'))
+            self.assertEqual(failed.exception.status_code, 400)
+            for upload in (gateway, litterbox, temp):
+                upload.assert_not_awaited()
+
+    def test_gateway_config_failure_does_not_log_values_or_replace_existing_config(self):
+        m = self.module
+        config = Path(m.local_media_gateway_config_path())
+        previous = config.read_bytes() if config.exists() else None
+        config.write_text('{"private-test-marker":', encoding='utf-8')
+        output = io.StringIO()
+        try:
+            with contextlib.redirect_stdout(output), patch.object(m, 'update_env_values') as update:
+                self.assertEqual(m.sync_media_gateway_config_from_local_file()['status'], 'failed')
+                update.assert_not_called()
+            self.assertNotIn('private-test-marker', output.getvalue())
+        finally:
+            if previous is None:
+                config.unlink()
+            else:
+                config.write_bytes(previous)
 
     def test_online_rollback_defers_native_files_and_removals_until_exit(self):
         m = self.module

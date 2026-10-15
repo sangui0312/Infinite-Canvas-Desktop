@@ -4,8 +4,8 @@
     if (!window.desktopBridge) return;
     const repo = 'https://github.com/sangui0312/Infinite-Canvas-Desktop';
     const bridge = window.desktopBridge.updates;
-    let state = { currentVersion: '0.3.6', phase: 'idle' };
-    let localNotes = { version: '0.3.6', notes: '' };
+    let state = { currentVersion: '0.3.7', phase: 'idle' };
+    let localNotes = { version: '0.3.7', notes: '' };
     let notesPromise;
     let pending = false;
     let revision = 0;
@@ -37,7 +37,7 @@
         render();
     }
     function render() {
-        const current = state.currentVersion || '0.3.6';
+        const current = state.currentVersion || '0.3.7';
         const version = newer() ? state.version : (localNotes.version || current);
         const notes = newer() ? String(state.notes || '') : String(localNotes.notes || '');
         const messages = {

@@ -11,8 +11,8 @@ async function run({win, root, waitFor}) {
   assert.equal(actual.currentVersion, currentVersion);
   await execute('window.DesktopUpdates.open()');
   assert.equal(await execute('document.querySelector("#project-update-modal").hidden'), false);
-  assert.equal(await execute('document.querySelector("#project-update-rollback-btn").hidden'), true);
-  assert.equal(await execute('document.querySelector("#update-source-list").hidden'), true);
+  assert.equal(await execute('document.querySelector("#project-update-rollback-btn")'), null);
+  assert.equal(await execute('document.querySelector("#update-source-list")'), null);
   assert.equal(await execute('document.querySelector("#full-install-download-btn").href'), 'https://github.com/sangui0312/Infinite-Canvas-Desktop/releases');
   const next = {currentVersion,phase:'available',version:nextVersion,releaseName:'Desktop test',notes:'<img src=x onerror="window.__unsafeRelease=true">'};
   win.webContents.send('desktop:update-state', next);
@@ -32,6 +32,6 @@ async function run({win, root, waitFor}) {
   await new Promise(resolve => setTimeout(resolve, 200));
   fs.writeFileSync(path.join(root,'github-update.png'), (await win.webContents.capturePage()).toPNG());
   await execute('window.DesktopUpdates.close("project-update-modal")');
-  return {source:'GitHub Releases',version:actual.currentVersion,legacyControlsHidden:true,notesEscaped:true,progress:true,manualInstall:true};
+  return {source:'GitHub Releases',version:actual.currentVersion,legacyControlsRemoved:true,notesEscaped:true,progress:true,manualInstall:true};
 }
 module.exports = {run};

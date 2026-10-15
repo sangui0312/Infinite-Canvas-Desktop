@@ -184,35 +184,7 @@ class ConnectionManager:
 manager = ConnectionManager()
 GLOBAL_LOOP = None
 APP_VERSION = "2026.06.03"
-GITHUB_REPO_URL = "https://github.com/hero8152/Infinite-Canvas"
-UPDATE_SERVER_BASE_URL = os.getenv("RH_UPDATE_SERVER_URL", "https://update.sansheng.site").strip().rstrip("/")
-UPDATE_SERVER_MANIFEST_URL = UPDATE_SERVER_BASE_URL + "/manifest.json"
-UPDATE_SERVER_MAX_MANIFEST_BYTES = 1024 * 1024
-UPDATE_SERVER_MAX_ARCHIVE_BYTES = 2 * 1024 * 1024 * 1024
-UPDATE_SERVER_MAX_EXTRACTED_BYTES = 4 * 1024 * 1024 * 1024
-
-def _load_nas_config_root() -> str:
-    if DESKTOP_MODE:
-        return ""
-    env_root = (os.getenv("RH_NAS_CONFIG_ROOT", "") or os.getenv("RH_NAS_UPDATE_ROOT", "")).strip()
-    if env_root:
-        return env_root.rstrip("/\\")
-    base_dir = os.path.dirname(os.path.abspath(__file__))
-    cfg_path = os.path.join(base_dir, "nas_config.json")
-    try:
-        if os.path.isfile(cfg_path):
-            with open(cfg_path, "r", encoding="utf-8-sig") as f:
-                data = json.load(f)
-            val = str(data.get("media_gateway_config_root") or data.get("nas_update_root") or "").strip()
-            if val:
-                return val.rstrip("/\\")
-    except Exception:
-        pass
-    return ""
-
-NAS_CONFIG_ROOT = _load_nas_config_root()
-NAS_CONFIG_USERNAME = os.getenv("NAS_CONFIG_USERNAME", "").strip()
-NAS_CONFIG_PASSWORD = os.getenv("NAS_CONFIG_PASSWORD", "")
+GITHUB_REPO_URL = "https://github.com/sangui0312/Infinite-Canvas-Desktop"
 
 
 @app.on_event("startup")
@@ -221,23 +193,17 @@ async def startup_event():
     GLOBAL_LOOP = asyncio.get_running_loop()
     # 不在启动时改写 static 页面文件：版本标记由响应中间件动态注入，磁盘文件
     # 必须与发布基线逐字节一致，桌面功能文件更新（文件包）才能通过基线校验。
-    # PSD 导出依赖随完整安装包和服务器更新包分发，不再从 NAS 更新目录补拉。
+    # PSD 导出依赖随桌面安装包分发。
     try:
         if not PSD_PYTOSHOP_OK:
             load_psd_dependencies()
     except Exception as exc:
         print(f"PSD 依赖加载失败: {exc}")
-    # 数据目录下的 media_gateway.json（与 NAS 私有目录同格式）在启动时同步到 API/.env；失败不阻断启动。
+    # 数据目录下的 media_gateway.json 在启动时同步到 API/.env；失败不阻断启动。
     try:
         await asyncio.to_thread(sync_media_gateway_config_from_local_file)
     except Exception as exc:
         print(f"本地媒体网关配置自动同步失败: {exc}")
-    # 自建媒体网关凭据从本机配置 NAS 的私有目录同步；失败不阻断启动。
-    try:
-        if not DESKTOP_MODE:
-            await asyncio.to_thread(sync_media_gateway_config_from_nas)
-    except Exception as exc:
-        print(f"NAS 媒体网关配置自动同步失败: {exc}")
     # 启动时整理资产库：给所有图片分组（含默认角色/场景）建好文件夹，并把根目录里的旧素材归整进去。
     try:
         await asyncio.to_thread(migrate_asset_library_into_dirs)
@@ -1625,7 +1591,7 @@ def current_app_version():
         return ""
 
 def update_notes_path() -> str:
-    return os.path.join(STATIC_DIR, "update-notes.json")
+    return os.path.join(STATIC_DIR, "desktop-update-notes.json")
 
 def safe_update_notes(payload: Any, version: str = "") -> Dict[str, Any]:
     if not isinstance(payload, dict):
@@ -1673,116 +1639,6 @@ def read_local_update_notes(version: str = "") -> Dict[str, Any]:
         pass
     return {"version": version or current_app_version(), "updated_at": "", "items": []}
 
-def fetch_remote_update_notes(url: str, version: str = "", timeout: float = 5.0) -> Dict[str, Any]:
-    info: Dict[str, Any] = {"ok": False, "error": "", "url": url, "version": version, "items": []}
-    if not url:
-        info["error"] = "missing url"
-        return info
-    try:
-        resp = requests.get(
-            f"{url}{'&' if '?' in url else '?'}t={int(time.time())}",
-            headers={"User-Agent": "Infinite-Canvas-Updater"},
-            timeout=timeout,
-            proxies=urllib.request.getproxies() or None,
-        )
-        if 200 <= resp.status_code < 400:
-            payload = json.loads(resp.content.decode("utf-8", errors="replace"))
-            notes = safe_update_notes(payload, version)
-            info.update(notes)
-            info["ok"] = True
-        else:
-            info["error"] = f"HTTP {resp.status_code}"
-    except Exception as exc:
-        info["error"] = str(exc)
-    return info
-
-def update_server_artifact_url(value: str) -> str:
-    value = str(value or "").strip()
-    if not value:
-        raise RuntimeError("更新清单中的下载地址为空")
-    base = urllib.parse.urlsplit(UPDATE_SERVER_BASE_URL)
-    if base.scheme != "https" or not base.netloc:
-        raise RuntimeError("更新服务器地址必须使用 HTTPS")
-    url = urllib.parse.urljoin(UPDATE_SERVER_BASE_URL + "/", str(value or "").strip())
-    parsed = urllib.parse.urlsplit(url)
-    if parsed.scheme != "https" or parsed.netloc.lower() != base.netloc.lower():
-        raise RuntimeError("更新清单中的下载地址必须是更新服务器同源 HTTPS 地址")
-    return url
-
-
-def require_desktop_update_manifest(payload):
-    """The Web feed cannot replace the desktop-aware backend."""
-    if payload.get("desktop_compatible") is not True or payload.get("desktop_protocol") != DESKTOP_PROTOCOL_VERSION:
-        raise RuntimeError("当前更新源尚未提供桌面兼容包，请等待桌面版发布；Web 更新包不能用于桌面 App")
-    minimum = str(payload.get("min_shell_version") or "")
-    current = os.getenv("IC_DESKTOP_SHELL_VERSION", "0.1.0")
-    def version_tuple(value):
-        if not re.fullmatch(r"\d+\.\d+\.\d+", value):
-            raise RuntimeError("桌面更新包的壳版本要求无效")
-        return tuple(map(int, value.split(".")))
-    if version_tuple(minimum) > version_tuple(current):
-        raise RuntimeError("此更新需要新版桌面 App，请先更新安装包")
-
-
-def fetch_update_server_manifest(timeout: float = 10.0) -> Dict[str, Any]:
-    response = requests.get(
-        UPDATE_SERVER_MANIFEST_URL,
-        headers={"User-Agent": "Infinite-Canvas-Updater"},
-        timeout=timeout,
-        stream=True,
-        proxies=urllib.request.getproxies() or None,
-    )
-    try:
-        update_server_artifact_url(response.url)
-        if response.status_code != 200:
-            raise RuntimeError(f"更新服务器返回 HTTP {response.status_code}")
-        content_length = response.headers.get("Content-Length")
-        if content_length and int(content_length) > UPDATE_SERVER_MAX_MANIFEST_BYTES:
-            raise RuntimeError("更新清单超过大小限制")
-        chunks = []
-        total = 0
-        for chunk in response.iter_content(65536):
-            if not chunk:
-                continue
-            total += len(chunk)
-            if total > UPDATE_SERVER_MAX_MANIFEST_BYTES:
-                raise RuntimeError("更新清单超过大小限制")
-            chunks.append(chunk)
-        payload = json.loads(b"".join(chunks).decode("utf-8-sig"))
-    finally:
-        response.close()
-    if not isinstance(payload, dict):
-        raise RuntimeError("更新清单格式异常")
-    if DESKTOP_MODE:
-        require_desktop_update_manifest(payload)
-    version = str(payload.get("version") or "").strip()
-    if not version or len(version) > 80 or "<" in version or "{" in version or not re.search(r"\d", version):
-        raise RuntimeError("更新清单版本号异常")
-    packages = {}
-    for key in ("update_package", "full_package"):
-        item = payload.get(key)
-        if not isinstance(item, dict):
-            raise RuntimeError(f"更新清单缺少 {key}")
-        size = item.get("size")
-        digest = str(item.get("sha256") or "").strip().lower()
-        if isinstance(size, bool) or not isinstance(size, int) or size <= 0:
-            raise RuntimeError(f"更新清单 {key} 大小异常")
-        if not re.fullmatch(r"[0-9a-f]{64}", digest):
-            raise RuntimeError(f"更新清单 {key} SHA-256 异常")
-        packages[key] = {
-            "url": update_server_artifact_url(str(item.get("url") or "")),
-            "size": size,
-            "sha256": digest,
-        }
-    notes = safe_update_notes(payload.get("notes") or {}, version)
-    return {"version": version, **packages, "notes": notes}
-
-
-def fetch_update_notes_with_fallback(preferred_source: str, version: str, timeout: float = 3.0) -> Tuple[Dict[str, Any], Dict[str, Any]]:
-    url = update_server_artifact_url("static/update-notes.json")
-    notes = fetch_remote_update_notes(url, version, timeout=timeout)
-    notes["source"] = "server"
-    return notes if notes.get("ok") else {"version": version, "items": []}, {"server": notes}
 
 def versioned_static_html(html: str) -> str:
     version = current_app_version()
@@ -1954,137 +1810,10 @@ def app_info():
     return {
         "version": version,
         "repo_url": GITHUB_REPO_URL,
-        "sources": {
-            "server": {
-                "label": "软件更新服务器",
-                "manifest_url": UPDATE_SERVER_MANIFEST_URL,
-                "full_package_url": "/api/full-install-download",
-            }
-        },
+        "sources": {"github": {"label": "GitHub Releases", "url": GITHUB_REPO_URL + "/releases"}},
         "update_notes": read_local_update_notes(version),
     }
 
-def connectivity_probe(name: str, url: str, timeout: float = 5.0) -> Dict[str, Any]:
-    started = time.time()
-    item = {
-        "name": name,
-        "url": url,
-        "ok": False,
-        "status": 0,
-        "elapsed_ms": 0,
-        "error": "",
-        "timed_out": False,
-    }
-    # NAS 共享路径探测：直接检查本地/UNC 文件系统可达性，不走 HTTP
-    if str(url or "").lower().startswith(("http://", "https://")) is False:
-        item["ok"] = os.path.exists(url)
-        item["status"] = 200 if item["ok"] else 404
-        item["error"] = "" if item["ok"] else "路径不存在或不可读"
-        item["elapsed_ms"] = int((time.time() - started) * 1000)
-        return item
-    try:
-        response = requests.get(
-            url,
-            headers={"User-Agent": "Infinite-Canvas-Updater"},
-            timeout=timeout,
-            stream=True,
-            proxies=urllib.request.getproxies() or None,
-        )
-        item["status"] = response.status_code
-        item["ok"] = 200 <= response.status_code < 400
-        if not item["ok"]:
-            item["error"] = f"HTTP {response.status_code} {response.reason}"
-        response.close()
-    except requests.Timeout:
-        item["timed_out"] = True
-        item["error"] = f"连接超时（超过 {timeout:g}s）"
-    except requests.RequestException as exc:
-        item["error"] = str(exc)
-    finally:
-        item["elapsed_ms"] = int((time.time() - started) * 1000)
-    return item
-
-def update_connectivity_targets() -> List[Tuple[str, str, str, bool]]:
-    return [("软件更新服务器", UPDATE_SERVER_MANIFEST_URL, "server", True)]
-
-@app.get("/api/update-connectivity/probe")
-def update_connectivity_probe(name: str):
-    """实时检测：只探测单个目标，前端可并发调用并逐条刷新。"""
-    for t_name, url, source, required in update_connectivity_targets():
-        if t_name == name:
-            item = connectivity_probe(t_name, url)
-            item["source"] = source
-            item["required"] = required
-            return item
-    raise HTTPException(status_code=404, detail="未知的连通性检测目标")
-
-@app.get("/api/update-connectivity")
-def update_connectivity():
-    targets = update_connectivity_targets()
-    results = []
-    for name, url, source, required in targets:
-        item = connectivity_probe(name, url)
-        item["source"] = source
-        item["required"] = required
-        results.append(item)
-    sources = {}
-    for source in ("server",):
-        source_required = [item for item in results if item.get("source") == source and item.get("required")]
-        sources[source] = {
-            "ok": all(item["ok"] for item in source_required),
-            "required": [item["name"] for item in source_required],
-        }
-    return {
-        "ok": sources["server"]["ok"],
-        "results": results,
-        "sources": sources,
-        "required": sources["server"]["required"],
-        "optional": [],
-    }
-
-def version_tuple(value: str) -> List[int]:
-    return [int(x) for x in re.findall(r"\d+", str(value or ""))]
-
-def version_gt(a: str, b: str) -> bool:
-    ta, tb = version_tuple(a), version_tuple(b)
-    n = max(len(ta), len(tb))
-    ta += [0] * (n - len(ta))
-    tb += [0] * (n - len(tb))
-    return ta > tb
-
-@app.get("/api/check-update")
-def check_update():
-    """检查自有软件更新服务器的最新版本和发布说明。"""
-    current = current_app_version()
-    server: Dict[str, Any] = {"version": "", "ok": False, "error": "", "url": UPDATE_SERVER_MANIFEST_URL, "source": "server"}
-    best: Dict[str, Any] = {}
-    try:
-        manifest = fetch_update_server_manifest()
-        server.update({"version": manifest["version"], "ok": True})
-        notes = manifest.get("notes") or {}
-        if not notes.get("items"):
-            remote_notes, _ = fetch_update_notes_with_fallback("server", manifest["version"], timeout=3.0)
-            notes = remote_notes
-        best = {
-            "source": "server",
-            "version": manifest["version"],
-            "update_url": manifest["update_package"]["url"],
-            "full_package_url": manifest["full_package"]["url"],
-            "update_notes": safe_update_notes(notes, manifest["version"]),
-        }
-    except Exception as exc:
-        server["error"] = str(exc)
-    update_available = bool(best and version_gt(best["version"], current))
-    notes_by_source = {"server": {"ok": server["ok"], "source": "server", **(best.get("update_notes") or {"version": current, "items": []})}}
-    return {
-        "current": current,
-        "server": server,
-        "latest": best,
-        "update_notes": best.get("update_notes") if best else {},
-        "update_notes_sources": notes_by_source,
-        "update_available": update_available,
-        "reachable": bool(server["ok"]),
-    }
 
 def update_allowed_file(path: str) -> bool:
     path = str(path or "").replace("\\", "/").lstrip("/")
@@ -2105,92 +1834,12 @@ def update_allowed_file(path: str) -> bool:
     return False
 
 
-NAS_MEDIA_GATEWAY_CONFIG_RELATIVE_PATH = os.path.join("private", "media_gateway.json")
-NAS_MEDIA_GATEWAY_CONFIG_KEYS = (
+MEDIA_GATEWAY_CONFIG_KEYS = (
     "CLOUD_VIDEO_UPLOAD_SERVICE",
     "SELF_HOSTED_VIDEO_UPLOAD_URL",
     "SELF_HOSTED_VIDEO_UPLOAD_TOKEN",
 )
 SELF_HOSTED_VIDEO_UPLOAD_URL = "https://media.sansheng.site/api/media/upload"
-
-
-def nas_config_unc_root() -> str:
-    return NAS_CONFIG_ROOT
-
-
-def nas_connect(username: str = "", password: str = "") -> bool:
-    """Use optional local NAS credentials for media-gateway config sync only."""
-    if os.name != "nt" or not NAS_CONFIG_ROOT:
-        return False
-    username = (username or NAS_CONFIG_USERNAME).strip()
-    password = password or NAS_CONFIG_PASSWORD
-    if not username:
-        return False
-    try:
-        args = ["net", "use", nas_config_unc_root(), "/user:" + username]
-        if password:
-            args.insert(-1, password)
-        proc = subprocess.run(args, capture_output=True, timeout=15, text=True)
-        if proc.returncode != 0:
-            err_text = (proc.stderr or "") + (proc.stdout or "")
-            if "already" in err_text.lower() or "exists" in err_text.lower():
-                return False
-            raise RuntimeError("无法连接媒体网关配置共享目录")
-        return True
-    except RuntimeError:
-        raise
-    except Exception as exc:
-        raise RuntimeError(f"建立媒体网关配置共享连接失败：{exc}") from exc
-
-
-def ensure_nas_config_session() -> bool:
-    if os.name != "nt" or not NAS_CONFIG_ROOT:
-        return False
-    try:
-        return nas_connect()
-    except Exception:
-        return False
-
-
-def sync_media_gateway_config_from_nas() -> Dict[str, Any]:
-    """从本机配置的 NAS 私有目录同步自建媒体网关配置。"""
-    if not NAS_CONFIG_ROOT:
-        return {"status": "nas_unconfigured", "updated": []}
-    session_connected = False
-    try:
-        session_connected = ensure_nas_config_session()
-        source = os.path.join(NAS_CONFIG_ROOT, NAS_MEDIA_GATEWAY_CONFIG_RELATIVE_PATH)
-        if not os.path.isfile(source):
-            return {"status": "config_missing", "updated": []}
-        with open(source, "r", encoding="utf-8-sig") as fh:
-            data = json.load(fh)
-        if not isinstance(data, dict):
-            raise ValueError("配置文件根节点必须是对象")
-        values = {key: str(data.get(key) or "").strip() for key in NAS_MEDIA_GATEWAY_CONFIG_KEYS}
-        missing = [key for key, value in values.items() if not value]
-        if missing:
-            raise ValueError("缺少字段：" + "、".join(missing))
-        if values["CLOUD_VIDEO_UPLOAD_SERVICE"].lower() != "selfhosted":
-            raise ValueError("CLOUD_VIDEO_UPLOAD_SERVICE 必须为 selfhosted")
-        values["CLOUD_VIDEO_UPLOAD_SERVICE"] = "selfhosted"
-        if values["SELF_HOSTED_VIDEO_UPLOAD_URL"] != SELF_HOSTED_VIDEO_UPLOAD_URL:
-            raise ValueError("SELF_HOSTED_VIDEO_UPLOAD_URL 不是允许的 HTTPS 上传地址")
-        updates = {
-            key: value
-            for key, value in values.items()
-            if read_api_env_value(key) != value or os.getenv(key, "") != value
-        }
-        if not updates:
-            return {"status": "already_configured", "updated": []}
-        update_env_values(updates)
-        print("[config] NAS 媒体网关配置已同步：" + "、".join(updates.keys()))
-        return {"status": "applied", "updated": list(updates.keys())}
-    except Exception as exc:
-        print(f"[config] NAS 媒体网关配置同步失败：{exc}")
-        return {"status": "failed", "updated": []}
-    finally:
-        if session_connected:
-            nas_disconnect()
 
 
 LOCAL_MEDIA_GATEWAY_CONFIG_NAME = "media_gateway.json"
@@ -2201,9 +1850,9 @@ def local_media_gateway_config_path() -> str:
 
 
 def sync_media_gateway_config_from_local_file() -> Dict[str, Any]:
-    """桌面端：从数据目录读取 media_gateway.json（与 NAS 私有目录同格式）写入 API/.env。
+    """桌面端：从数据目录读取 media_gateway.json写入 API/.env。
 
-    没有 NAS 同步的桌面环境放入一次配置文件即可让本地参考视频经自建媒体网关
+    放入一次配置文件即可让本地参考视频经自建媒体网关
     上传为公网地址；失败不阻断启动，也不会清掉已有配置。
     """
     source = local_media_gateway_config_path()
@@ -2214,7 +1863,7 @@ def sync_media_gateway_config_from_local_file() -> Dict[str, Any]:
             data = json.load(fh)
         if not isinstance(data, dict):
             raise ValueError("配置文件根节点必须是对象")
-        values = {key: str(data.get(key) or "").strip() for key in NAS_MEDIA_GATEWAY_CONFIG_KEYS}
+        values = {key: str(data.get(key) or "").strip() for key in MEDIA_GATEWAY_CONFIG_KEYS}
         missing = [key for key, value in values.items() if not value]
         if missing:
             raise ValueError("缺少字段：" + "、".join(missing))
@@ -2234,19 +1883,8 @@ def sync_media_gateway_config_from_local_file() -> Dict[str, Any]:
         print("[config] 本地媒体网关配置已同步：" + "、".join(updates.keys()))
         return {"status": "applied", "updated": list(updates.keys())}
     except Exception as exc:
-        print(f"[config] 本地媒体网关配置同步失败：{exc}")
+        print("[config] 本地媒体网关配置同步失败（" + type(exc).__name__ + "）")
         return {"status": "failed", "updated": []}
-
-
-def nas_disconnect() -> None:
-    """Disconnect only the SMB session opened for media-gateway config sync."""
-    if os.name != "nt" or not NAS_CONFIG_ROOT:
-        return
-    try:
-        subprocess.run(["net", "use", nas_config_unc_root(), "/delete", "/y"],
-                       capture_output=True, timeout=15, text=True)
-    except Exception:
-        pass
 
 
 def safe_update_target(path: str) -> str:
@@ -2409,15 +2047,6 @@ def schedule_self_restart(delay_seconds: int = 3, deferred_update_dir: str = "",
         logging.exception("schedule_self_restart failed: %s", exc)
         return False
 
-class UpdateRequest(BaseModel):
-    auto_restart: bool = False
-    restart_delay: int = 3
-    source: str = "server"
-    fallback: bool = False
-
-
-UPDATE_SOURCE_LABELS = {"server": "更新服务器"}
-
 
 def staged_update_file_list(staging_root: str) -> Tuple[List[str], List[str], List[str]]:
     root_files = []
@@ -2439,114 +2068,6 @@ def staged_update_file_list(staging_root: str) -> Tuple[List[str], List[str], Li
     root_files = sorted(set(root_files))
     static_files = sorted(set(static_files))
     return root_files, static_files, root_files + static_files
-
-
-def normalize_update_source(value: str) -> str:
-    return "server"
-
-
-def download_server_update_files(staging_root: str) -> List[str]:
-    manifest = fetch_update_server_manifest()
-    package = manifest["update_package"]
-    if package["size"] > UPDATE_SERVER_MAX_ARCHIVE_BYTES:
-        raise RuntimeError("服务器更新包超过大小限制")
-    os.makedirs(staging_root, exist_ok=True)
-    archive_path = os.path.join(staging_root, ".server-update.zip")
-    download_path = archive_path + ".download_tmp"
-    digest = hashlib.sha256()
-    total = 0
-    response = requests.get(
-        package["url"],
-        headers={"User-Agent": "Infinite-Canvas-Updater", "Accept-Encoding": "identity"},
-        timeout=(15, 600),
-        stream=True,
-        proxies=urllib.request.getproxies() or None,
-    )
-    try:
-        if response.status_code != 200:
-            raise RuntimeError(f"更新包下载返回 HTTP {response.status_code}")
-        update_server_artifact_url(response.url)
-        content_length = response.headers.get("Content-Length")
-        if content_length and int(content_length) != package["size"]:
-            raise RuntimeError("更新包响应长度与发布清单不一致")
-        with open(download_path, "wb") as output:
-            for chunk in response.iter_content(1024 * 1024):
-                if not chunk:
-                    continue
-                total += len(chunk)
-                if total > package["size"] or total > UPDATE_SERVER_MAX_ARCHIVE_BYTES:
-                    raise RuntimeError("更新包实际大小超过发布清单")
-                digest.update(chunk)
-                output.write(chunk)
-    finally:
-        response.close()
-    if total != package["size"]:
-        raise RuntimeError("更新包下载不完整")
-    if digest.hexdigest() != package["sha256"]:
-        raise RuntimeError("更新包 SHA-256 校验失败")
-    os.replace(download_path, archive_path)
-    seen = set()
-    extracted_total = 0
-    try:
-        with zipfile.ZipFile(archive_path, "r") as archive:
-            infos = [info for info in archive.infolist() if not info.is_dir()]
-            if len(infos) > 20000:
-                raise RuntimeError("更新包文件数量超过限制")
-            for info in infos:
-                rel = info.filename.replace("\\", "/")
-                parts = rel.split("/")
-                if (not rel or rel.startswith("/") or ":" in rel
-                        or any(part in {"", ".", ".."} for part in parts)):
-                    raise RuntimeError(f"更新包包含不安全路径：{info.filename}")
-                if not update_allowed_file(rel):
-                    raise RuntimeError(f"更新包包含非程序文件：{rel}")
-                path_key = rel.casefold()
-                if path_key in seen:
-                    raise RuntimeError(f"更新包包含重复文件：{rel}")
-                seen.add(path_key)
-                mode = (info.external_attr >> 16) & 0xFFFF
-                if stat.S_ISLNK(mode):
-                    raise RuntimeError(f"更新包包含符号链接：{rel}")
-                if info.file_size < 0 or info.file_size > UPDATE_SERVER_MAX_EXTRACTED_BYTES:
-                    raise RuntimeError(f"更新包文件大小异常：{rel}")
-                extracted_total += info.file_size
-                if extracted_total > UPDATE_SERVER_MAX_EXTRACTED_BYTES:
-                    raise RuntimeError("更新包解压后超过大小限制")
-                target = os.path.abspath(os.path.join(staging_root, *parts))
-                if os.path.commonpath([os.path.abspath(staging_root), target]) != os.path.abspath(staging_root):
-                    raise RuntimeError(f"更新包路径越界：{rel}")
-                os.makedirs(os.path.dirname(target), exist_ok=True)
-                copied = 0
-                with archive.open(info, "r") as source, open(target, "wb") as output:
-                    while True:
-                        chunk = source.read(1024 * 1024)
-                        if not chunk:
-                            break
-                        copied += len(chunk)
-                        if copied > info.file_size:
-                            raise RuntimeError(f"更新包文件长度异常：{rel}")
-                        output.write(chunk)
-                if copied != info.file_size:
-                    raise RuntimeError(f"更新包文件被截断：{rel}")
-    finally:
-        for path in (archive_path, download_path):
-            try:
-                if os.path.exists(path):
-                    os.remove(path)
-            except OSError:
-                pass
-    root_files, static_files, files = staged_update_file_list(staging_root)
-    with open(os.path.join(staging_root, "VERSION"), "r", encoding="utf-8-sig") as version_file:
-        package_version = (version_file.read().strip().splitlines() or [""])[0].strip()
-    if package_version != manifest["version"]:
-        raise RuntimeError("更新包版本与发布清单不一致")
-    return files
-
-
-def stage_update_from_source(source: str, staging_root: str) -> Tuple[List[str], List[str], List[str]]:
-    """从自有服务器下载并校验更新包，返回 (root_files, static_files, files)。"""
-    download_server_update_files(staging_root)
-    return staged_update_file_list(staging_root)
 
 
 def validate_staged_update(staging_root: str, root_files: List[str], static_files: List[str]) -> None:
@@ -2709,210 +2230,6 @@ def create_update_backup(
             shutil.rmtree(backup_dir, ignore_errors=True)
         raise
 
-@app.get("/api/full-install-download")
-def full_install_download():
-    try:
-        manifest = fetch_update_server_manifest()
-        return RedirectResponse(manifest["full_package"]["url"], status_code=307)
-    except Exception as exc:
-        raise HTTPException(status_code=503, detail=f"无法获取完整安装包地址：{exc}") from exc
-
-
-@app.post("/api/update")
-@app.post("/api/update-from-github", include_in_schema=False)
-def update_from_server(req: UpdateRequest = UpdateRequest()):
-    if not UPDATE_LOCK.acquire(blocking=False):
-        raise HTTPException(status_code=409, detail="正在更新中，请稍后再试")
-    staging_root = ""
-    deferred_payload = ""
-    restart_scheduled = False
-    requested_source = normalize_update_source(req.source)
-    source_order = ["server"]
-    try:
-        backup_root = ""
-        backup_manifest: Dict[str, Any] = {}
-
-        # 只从发布清单指定的服务器包更新。
-        source = requested_source
-        root_files = static_files = files = None
-        download_errors: List[str] = []
-        fallback_used = False
-        for idx, candidate in enumerate(source_order):
-            attempt_staging = os.path.join(
-                DATA_DIR, "update_staging",
-                f"{time.strftime('%Y%m%d-%H%M%S')}-{os.getpid()}-{candidate}",
-            )
-            if os.path.isdir(attempt_staging):
-                shutil.rmtree(attempt_staging, ignore_errors=True)
-            label = UPDATE_SOURCE_LABELS.get(candidate, candidate)
-            print(f"[update] 尝试下载源 [{idx + 1}/{len(source_order)}] {label}（{candidate}）→ {attempt_staging}")
-            try:
-                root_files, static_files, files = stage_update_from_source(candidate, attempt_staging)
-                source = candidate
-                staging_root = attempt_staging
-                fallback_used = idx > 0
-                print(f"[update] 下载源 {label} 成功，共 {len(files or [])} 个文件")
-                break
-            except Exception as exc:  # noqa: BLE001 — 记录后尝试下一个源
-                if os.path.isdir(attempt_staging):
-                    shutil.rmtree(attempt_staging, ignore_errors=True)
-                print(f"[update] 下载源 {label} 失败：{exc}")
-                traceback.print_exc()
-                download_errors.append(f"{label}：{exc}")
-        if not staging_root:
-            detail = "；".join(download_errors) or "未知错误"
-            print(f"[update] 软件更新服务器下载失败 → {detail}")
-            raise HTTPException(status_code=502, detail=f"软件更新服务器下载失败 → {detail}")
-
-        validate_staged_update(staging_root, root_files, static_files)
-
-        new_version = ""
-        try:
-            with open(os.path.join(staging_root, "VERSION"), "r", encoding="utf-8-sig") as f:
-                new_version = (f.read().strip().splitlines() or [""])[0].strip()
-        except Exception:
-            pass
-        notes_file = os.path.join(staging_root, "static", "update-notes.json")
-        update_notes: Dict[str, Any] = {}
-        try:
-            if os.path.exists(notes_file):
-                with open(notes_file, "r", encoding="utf-8") as f:
-                    update_notes = safe_update_notes(json.load(f), new_version)
-        except Exception:
-            update_notes = {}
-        # A restore point must be complete before any live file is replaced.
-        backup_root = next_update_backup_dir()
-        backup_manifest = create_update_backup(
-            backup_root,
-            root_files,
-            static_files,
-            kind="update",
-            source=source,
-            target_version=new_version,
-            update_notes=update_notes,
-        )
-        deferred_root_files = []
-        immediate_root_files = list(root_files)
-        if os.name == "nt":
-            deferred_root_files = [rel for rel in root_files if rel.startswith("py-libs/")]
-            immediate_root_files = [rel for rel in root_files if rel not in deferred_root_files]
-            if deferred_root_files:
-                if not req.auto_restart:
-                    raise RuntimeError("本次更新包含 py-libs 原生依赖，需要开启自动重启后才能安全更新")
-                deferred_payload, deferred_root_files = stage_deferred_py_libs_update(staging_root, deferred_root_files)
-        updated = []
-
-        staged_static_dir = os.path.join(staging_root, "static")
-        if not os.path.isdir(staged_static_dir):
-            raise RuntimeError("更新包 static 暂存目录不存在，已取消更新")
-        static_dir = safe_static_dir()
-        backup_static_dir = os.path.join(backup_root, "static")
-        # 逐文件原子替换（os.replace），避免整目录 rmtree 在 Windows 文件占用下失败导致 static 半删除。
-        static_replaced: List[str] = []
-        static_errors: List[str] = []
-        try:
-            for rel in static_files:
-                staged_path = os.path.abspath(os.path.join(staging_root, *rel.split("/")))
-                target = safe_update_target(rel)
-                if not os.path.isfile(staged_path):
-                    continue
-                os.makedirs(os.path.dirname(target), exist_ok=True)
-                temp_path = f"{target}.update_tmp"
-                prepare_update_target(temp_path)
-                shutil.copy2(staged_path, temp_path)
-                replace_update_target(temp_path, target)
-                static_replaced.append(rel)
-        except OSError as exc:
-            static_errors.append(f"{rel}: {exc}")
-        if static_errors:
-            # 回滚已替换的 static 文件
-            for rel in reversed(static_replaced):
-                backup_path = os.path.join(backup_static_dir, *rel.split("/"))
-                target = safe_update_target(rel)
-                try:
-                    if os.path.exists(backup_path):
-                        temp_path = f"{target}.rollback_tmp"
-                        prepare_update_target(temp_path)
-                        shutil.copy2(backup_path, temp_path)
-                        replace_update_target(temp_path, target)
-                except OSError:
-                    pass
-            detail = "；".join(static_errors[:5])
-            raise RuntimeError(f"static 文件更新失败（文件可能被占用或没有写权限）：{detail}")
-        updated.extend(static_files)
-
-        replaced_root_files = []
-        try:
-            for rel in immediate_root_files:
-                target = safe_update_target(rel)
-                os.makedirs(os.path.dirname(target), exist_ok=True)
-                temp_path = f"{target}.update_tmp"
-                prepare_update_target(temp_path)
-                shutil.copy2(os.path.join(staging_root, *rel.split("/")), temp_path)
-                replace_update_target(temp_path, target)
-                replaced_root_files.append(rel)
-                updated.append(rel)
-        except Exception:
-            for rel in reversed(replaced_root_files):
-                backup_path = os.path.join(backup_root, *rel.split("/"))
-                target = safe_update_target(rel)
-                if os.path.exists(backup_path):
-                    temp_path = f"{target}.rollback_tmp"
-                    prepare_update_target(temp_path)
-                    shutil.copy2(backup_path, temp_path)
-                    replace_update_target(temp_path, target)
-                elif not bool((backup_manifest.get("root_files") or {}).get(rel, {}).get("existed")) and os.path.exists(target):
-                    os.remove(target)
-            # static 已逐文件替换为新版，失败时逐文件回滚到备份版本（避免整目录 rmtree 的文件占用风险）
-            if os.path.isdir(backup_static_dir):
-                for rel in static_files:
-                    backup_path = os.path.join(backup_static_dir, *rel.split("/"))
-                    target = safe_update_target(rel)
-                    try:
-                        if os.path.exists(backup_path):
-                            temp_path = f"{target}.rollback_tmp"
-                            prepare_update_target(temp_path)
-                            shutil.copy2(backup_path, temp_path)
-                            replace_update_target(temp_path, target)
-                    except OSError:
-                        pass
-            raise
-
-        if deferred_root_files:
-            restart_scheduled = schedule_self_restart(req.restart_delay, deferred_payload)
-            if restart_scheduled:
-                updated.extend(deferred_root_files)
-        elif req.auto_restart and updated:
-            restart_scheduled = schedule_self_restart(req.restart_delay)
-        pruned_backups = prune_update_backups({os.path.basename(backup_root)})
-        return {
-            "ok": True,
-            "source": source,
-            "source_label": UPDATE_SOURCE_LABELS.get(source, source),
-            "requested_source": requested_source,
-            "fallback_used": fallback_used,
-            "download_errors": download_errors,
-            "updated": updated,
-            "count": len(updated),
-            "version": new_version,
-            "update_notes": update_notes,
-            "backup_dir": backup_root,
-            "backup": backup_manifest,
-            "pruned_backups": pruned_backups,
-            "restart_required": True,
-            "restart_scheduled": restart_scheduled,
-            "deferred_files": deferred_root_files,
-        }
-    except HTTPException:
-        raise
-    except Exception as exc:
-        raise HTTPException(status_code=500, detail=f"更新失败：{exc}") from exc
-    finally:
-        if staging_root and os.path.isdir(staging_root):
-            shutil.rmtree(staging_root, ignore_errors=True)
-        if deferred_payload and not restart_scheduled and os.path.isdir(deferred_payload):
-            shutil.rmtree(deferred_payload, ignore_errors=True)
-        UPDATE_LOCK.release()
 
 def list_update_backups() -> List[Dict[str, Any]]:
     root = update_backup_root()
@@ -10133,6 +9450,12 @@ async def upload_local_video_to_cloud(ref_url: str, service: str = "auto", allow
     if ref_url.startswith("http://") or ref_url.startswith("https://"):
         return {"url": ref_url, "source": ref_url, "service": "existing"}
     path = local_media_path_for_cloud_upload(ref_url, allowed_prefixes)
+    is_video = content_type_for_path(path).startswith("video/")
+    if is_video:
+        try:
+            await asyncio.to_thread(validate_video_file, path)
+        except Exception as exc:
+            raise HTTPException(status_code=400, detail="视频文件校验失败，请检查文件是否完整") from exc
     requested_service = str(service or "auto").strip().lower() or "auto"
     selected_service = requested_service
     if requested_service == "auto":
@@ -10142,24 +9465,31 @@ async def upload_local_video_to_cloud(ref_url: str, service: str = "auto", allow
             or "auto"
         ).strip().lower()
     selfhosted_aliases = {"selfhosted", "self-hosted", "media-gateway", "media_gateway"}
-    is_video = content_type_for_path(path).startswith("video/")
+    errors = []
+    if selected_service == "auto" and is_video and (
+        os.getenv("SELF_HOSTED_VIDEO_UPLOAD_URL") or read_api_env_value("SELF_HOSTED_VIDEO_UPLOAD_URL")
+    ):
+        selected_service = "selfhosted"
     if selected_service in selfhosted_aliases:
         if not is_video:
             if requested_service in selfhosted_aliases:
                 raise HTTPException(status_code=400, detail="自建媒体网关当前仅支持视频文件，不支持音频上传")
             selected_service = "auto"
         else:
-            return await upload_video_to_selfhosted(path, ref_url)
+            try:
+                return await upload_video_to_selfhosted(path, ref_url)
+            except Exception as exc:
+                # Never carry upstream bodies, URLs or credentials into fallback errors.
+                errors.append("selfhosted: " + (f"HTTP {exc.status_code}" if isinstance(exc, HTTPException) else type(exc).__name__))
     if selected_service in {"litterbox", "catbox"}:
         return await upload_video_to_litterbox(path, ref_url)
     if selected_service in {"temp", "temp.sh", "tempsh"}:
         return await upload_video_to_temp_sh(path, ref_url)
-    errors = []
     for name, func in (("litterbox", upload_video_to_litterbox), ("temp.sh", upload_video_to_temp_sh)):
         try:
             return await func(path, ref_url)
-        except HTTPException as exc:
-            errors.append(f"{name}: {exc.detail}")
+        except Exception as exc:
+            errors.append(name + ": " + (f"HTTP {exc.status_code}" if isinstance(exc, HTTPException) else type(exc).__name__))
     raise HTTPException(status_code=502, detail="云端上传失败：" + "；".join(errors))
 
 async def upload_local_video_to_temp_sh(ref_url: str) -> Dict[str, str]:
