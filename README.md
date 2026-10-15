@@ -179,6 +179,7 @@ node tools/check_media.cjs
 ## 发布流程
 
 1. 更新 `package.json`、`package-lock.json`、`backend/desktop-app-version.json` 和 `backend/static/desktop-update-notes.json` 的版本与公告。基础兼容能力改变时更新 `minimumShell`。
+   公告条目按时间倒序维护：最新条目在最上方，`历史更新：` 之后接最早的条目。
 2. 运行依赖变化时，更新运行包及 `runtime-manifest.json` 中的地址、大小与哈希。
 3. 执行构建和验证，为安装包等发布文件生成 `SHA256SUMS.txt`。构建脚本生成 `hybrid-update.json` 和 `release-tree.json`；提供上一版本的 `-BaselineManifest <release-tree.json>` 时，仅在基础文件与配置完全一致时生成文件差异 ZIP，否则自动使用安装包模式。保留每次发布的清单作为下次构建基线。
 4. 推送源码，为对应提交创建 `v<版本>` 标签及草稿 Release。
