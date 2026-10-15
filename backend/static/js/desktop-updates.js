@@ -4,8 +4,8 @@
     if (!window.desktopBridge) return;
     const repo = 'https://github.com/sangui0312/Infinite-Canvas-Desktop';
     const bridge = window.desktopBridge.updates;
-    let state = { currentVersion: '0.2.0', phase: 'idle' };
-    let localNotes = { version: '0.2.0', notes: '' };
+    let state = { currentVersion: '0.2.1', phase: 'idle' };
+    let localNotes = { version: '0.2.1', notes: '' };
     let notesPromise;
     let pending = false;
     let revision = 0;
@@ -37,7 +37,7 @@
         render();
     }
     function render() {
-        const current = state.currentVersion || '0.2.0';
+        const current = state.currentVersion || '0.2.1';
         const version = newer() ? state.version : (localNotes.version || current);
         const notes = newer() ? String(state.notes || '') : String(localNotes.notes || '');
         const messages = {
@@ -121,7 +121,7 @@
     async function loadNotes() {
         if (!notesPromise) notesPromise = fetch('/static/desktop-update-notes.json', { cache: 'no-store' })
             .then(response => { if (!response.ok) throw new Error('notes'); return response.json(); })
-            .then(data => { if (data && typeof data.notes === 'string') localNotes = { version: '0.2.0', notes: data.notes }; })
+            .then(data => { if (data && typeof data.notes === 'string') localNotes = { version: String(data.version || state.currentVersion), notes: data.notes }; })
             .catch(() => {}).finally(render);
         return notesPromise;
     }

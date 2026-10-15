@@ -42,17 +42,28 @@ async function run({ win, session, root, saveScript }) {
     const page = kind === 'smart' ? 'smart-canvas.html' : 'canvas.html';
     const route = `/static/${page}?id=${encodeURIComponent(created.id)}`;
     await execute(`document.querySelector('#frame-canvas').src=${JSON.stringify(route)}`);
-    const frame = await waitFor(async () => {
+    let frame = await waitFor(async () => {
       const frame = win.webContents.mainFrame.framesInSubtree.find(item => item.url.includes(`/static/${page}?id=`));
       if (!frame) return false;
       return await frame.executeJavaScript(`typeof saveCanvas === 'function' && typeof canvas !== 'undefined' && canvas?.id === ${JSON.stringify(created.id)}`).catch(() => false) ? frame : false;
     }, `${kind} canvas initialized`);
+    const interaction = kind === 'classic' ? await require('./classic-canvas-smoke.cjs').run({frame}) : null;
     await frame.executeJavaScript(`canvas.title = 'Desktop smoke ${kind} saved';`);
     // Exercise the exact renderer traversal and save wait used by window close.
     await execute(saveScript);
     const saved = await execute(`fetch('/api/canvases/${encodeURIComponent(created.id)}').then(r=>r.json())`);
     assert.equal(saved.canvas.title, `Desktop smoke ${kind} saved`);
-    results.push({ kind, saved: true });
+    if (interaction) {
+      for (const node of interaction.created) assert.ok(saved.canvas.nodes.some(item=>item.id===node.id&&item.type===node.type),'created node persisted');
+      assert.ok(saved.canvas.connections.some(link=>link.from===interaction.connection.from&&link.to===interaction.connection.to),'connection persisted');
+      await execute(`document.querySelector('#frame-canvas').src=${JSON.stringify(route+'&reopen=1')}`);
+      frame=await waitFor(async()=>{
+        const current=win.webContents.mainFrame.framesInSubtree.find(item=>item.url.includes(`/static/${page}?id=`)&&item.url.includes('reopen=1'));
+        if (!current) return false;
+        return await current.executeJavaScript(`typeof canvas !== 'undefined' && canvas?.id === ${JSON.stringify(created.id)} && document.querySelectorAll('#nodes > .node').length === ${interaction.created.length}`).catch(()=>false) ? current : false;
+      },'ordinary canvas nodes reopened');
+    }
+    results.push({ kind, saved: true, ...(interaction ? {interaction:{rightClickMenuTypes:interaction.rightClickMenuTypes,linkedNode:true,toolbarTypes:interaction.toolbarTypes,retiredTypesBlocked:interaction.retiredTypesBlocked,reopened:true}} : {}) });
   }
   currentStage = 'download';
   const downloadPath = path.join(root, 'smoke-download.txt');

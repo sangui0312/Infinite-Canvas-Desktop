@@ -4189,7 +4189,7 @@ function createLinkedNode(type){
     }
 }
 function createNodeByType(type, point){
-    if(CANVAS_HIDDEN_TYPES.has(type)) return null;
+    if(isRetiredCanvasNode({type})) return null;
     if(type === 'image') return addImageNode(point);
     if(type === 'prompt') return addPromptNode(point);
     if(type === 'loop') return addLoopNode(point);
@@ -4203,7 +4203,7 @@ function createNodeByType(type, point){
 }
 function menuAdd(type){
     closeCreateMenu();
-    if(CANVAS_HIDDEN_TYPES.has(type)) return;
+    if(isRetiredCanvasNode({type})) return;
     if(type === 'image') addImageNode(menuPoint);
     if(type === 'prompt') addPromptNode(menuPoint);
     if(type === 'loop') addLoopNode(menuPoint);
