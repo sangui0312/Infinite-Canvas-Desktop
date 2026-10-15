@@ -14472,7 +14472,7 @@ async def probe_volcengine_auto_detect(client, base_url: str, api_key: str):
 
 def classify_upstream_model(mid):
     lc = str(mid or "").lower()
-    video_keys = ["veo", "sora", "wan2", "wanx", "doubao-seedance", "doubao-1", "kling", "hailuo", "minimax-h3", "video", "t2v-", "i2v-", "s2v"]
+    video_keys = ["veo", "sora", "wan2", "wan3", "wanx", "seedance", "doubao-1", "kling", "hailuo", "minimax-h3", "vidu", "pixverse", "skyreels", "video", "t2v-", "i2v-", "s2v"]
     if any(k in lc for k in video_keys):
         return "video"
     image_keys = ["banana", "image", "dalle", "dall-e", "imagen", "flux", "stable", "sdxl", "midjourney", "nano-banana", "ideogram", "fal-ai", "z-image", "qwen-image", "klein", "seedream", "doubao-seedream", "text-to-image", "image-to-image"]
