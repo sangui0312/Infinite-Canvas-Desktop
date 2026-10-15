@@ -694,7 +694,8 @@
             transition: max-height .28s var(--fluid-ease), opacity .18s ease;
         }
         .settings-fold-group:not(.is-collapsed) {
-            max-height: 132px;
+            /* Five entries (theme, language, workflow, storage, legacy import). */
+            max-height: 240px;
             opacity: 1;
             pointer-events: auto;
         }
@@ -808,7 +809,7 @@
                 gap: 5px;
             }
             .settings-fold-group:not(.is-collapsed) {
-                max-height: 105px;
+                max-height: 200px;
             }
             .side-pill {
                 height:30px;
@@ -858,7 +859,7 @@
                 gap: 4px;
             }
             .settings-fold-group:not(.is-collapsed) {
-                max-height: 102px;
+                max-height: 200px;
             }
             .side-pill {
                 height:30px;
