@@ -183,9 +183,9 @@ node tools/check_media.cjs
 1. 更新 `package.json`、`package-lock.json`、`backend/desktop-app-version.json` 和 `backend/static/desktop-update-notes.json` 的版本与公告。基础兼容能力改变时更新 `minimumShell`。
    公告条目按时间倒序维护：最新条目在最上方，`历史更新：` 之后接最早的条目。
 2. 运行依赖变化时，更新运行包及 `runtime-manifest.json` 中的地址、大小与哈希。
-3. 执行构建和验证，为安装包等发布文件生成 `SHA256SUMS.txt`。构建脚本生成 `hybrid-update.json` 和 `release-tree.json`；提供上一版本的 `-BaselineManifest <release-tree.json>` 时，仅在基础文件与配置完全一致时生成文件差异 ZIP，否则自动使用安装包模式。保留每次发布的清单作为下次构建基线。
+3. 执行构建和验证，为安装包等发布文件生成 `SHA256SUMS.txt`。构建脚本读取 `release-baselines/` 下的历史 `release-tree-*.json`，为每个主版本号相同且版本更旧的基线生成一份文件差异 ZIP，并在 `hybrid-update.json` 写入 `patches` 列表和兼容旧客户端的 `patch`（主基线；可用 `-PrimaryBaseline <版本>` 指定，默认取最新基线）。主版本号变化（如 1.x→2.x）时不生成补丁，走完整安装包；需要同时更新桌面壳时用 `-RequireFoundation` 恢复严格基线校验。发布后把新的 `release-tree.json` 归档为 `release-baselines/release-tree-<版本>.json`。
 4. 推送源码，为对应提交创建 `v<版本>` 标签及草稿 Release。
-5. 每次 Release 都上传完整安装包、blockmap、`latest.yml`、`hybrid-update.json`、`release-tree.json`、可选文件差异 ZIP、校验文件及所需依赖和来源附件，保持完整安装与两种更新路线可用。
+5. 每次 Release 都上传完整安装包、blockmap、`latest.yml`、`hybrid-update.json`、`release-tree.json`、全部分文件差异 ZIP、校验文件及所需依赖和来源附件，保持完整安装与两种更新路线可用。
 6. 核对附件与哈希后公开 Release，再验证匿名下载和在线版本检测。
 
 打包后可用 `backend/python/python.exe -X utf8 tools/check_runtime_drift.py dist/win-unpacked/resources/backend .test-data/drift-check` 确认后端真实启动一次后程序文件仍与发布基线逐字节一致；本地改写会导致功能文件更新被安全拒绝。

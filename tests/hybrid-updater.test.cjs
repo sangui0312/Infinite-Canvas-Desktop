@@ -6,7 +6,7 @@ function fixture(overrides={}){
   const native=new Native(),calls=[],temp=fs.mkdtempSync(path.join(os.tmpdir(),'ic-hybrid-'));
   const patch={fromVersion:'1.2.3',name:'InfiniteCanvas-Files-1.2.3-to-1.2.4.zip',url:'https://github.com/sangui0312/Infinite-Canvas-Desktop/releases/download/v1.2.4/InfiniteCanvas-Files-1.2.3-to-1.2.4.zip',size:10,sha256:'a'.repeat(64)};
   const manifest={schema:1,version:'1.2.4',minimumShell:'1.0.0',mode:'files',patch};
-  const transport={json:async url=>url.includes('api.github.com')?{tag_name:'v1.2.4',name:'release',assets:[{name:'hybrid-update.json',browser_download_url:'https://github.com/sangui0312/Infinite-Canvas-Desktop/releases/download/v1.2.4/hybrid-update.json'}]}:manifest,download:async(p,file,progress)=>{calls.push('download');progress(10,10);}};
+  const transport={json:async url=>url.includes('api.github.com')?{tag_name:'v'+manifest.version,name:'release',assets:[{name:'hybrid-update.json',browser_download_url:`https://github.com/sangui0312/Infinite-Canvas-Desktop/releases/download/v${manifest.version}/hybrid-update.json`}]}:manifest,download:async(p,file,progress)=>{calls.push('download');progress(10,10);}};
   const files={inspect:async()=>calls.push('inspect')};
   const controller=new HybridUpdater({updater:native,shellVersion:'1.2.3',currentVersion:'1.2.3',enabled:true,transport,files,cacheDir:temp,applyFiles:async()=>{calls.push('apply');return true;},prepareForInstall:async()=>true,...overrides});
   return{controller,native,manifest,transport,files,calls,cleanup:()=>fs.rmSync(temp,{recursive:true,force:true})};
@@ -30,6 +30,35 @@ test('manifest cannot fetch a package on another host and disabled mode never co
 test('GitHub transport rejects external redirects and mismatched downloaded bytes',async()=>{
   const t=new GitHubTransport(async()=>new Response('',{status:302,headers:{location:'https://evil.example/payload'}}));await assert.rejects(t.response('https://github.com/source',true));
   const dir=fs.mkdtempSync(path.join(os.tmpdir(),'ic-download-'));try{const bytes=Buffer.from('payload');const t=new GitHubTransport(async()=>new Response(bytes));await assert.rejects(t.download({size:bytes.length,sha256:'0'.repeat(64),url:'https://github.com/source'},path.join(dir,'update.zip'),()=>{}));assert.equal(fs.existsSync(path.join(dir,'update.zip')),false);}finally{fs.rmSync(dir,{recursive:true,force:true});}
+});
+test('multi-baseline manifest serves each client its own patch',async()=>{
+  const patches=[
+    {fromVersion:'1.2.2',name:'InfiniteCanvas-Files-1.2.2-to-1.2.4.zip',url:'https://github.com/sangui0312/Infinite-Canvas-Desktop/releases/download/v1.2.4/InfiniteCanvas-Files-1.2.2-to-1.2.4.zip',size:10,sha256:'b'.repeat(64)},
+    {fromVersion:'1.2.3',name:'InfiniteCanvas-Files-1.2.3-to-1.2.4.zip',url:'https://github.com/sangui0312/Infinite-Canvas-Desktop/releases/download/v1.2.4/InfiniteCanvas-Files-1.2.3-to-1.2.4.zip',size:10,sha256:'a'.repeat(64)}
+  ];
+  for(const current of ['1.2.3','1.2.2']){
+    const f=fixture({currentVersion:current});
+    try{
+      f.manifest.patches=patches;
+      const found=await f.controller.check();
+      assert.equal(found.route,'files');
+      assert.equal(f.controller.patch.fromVersion,current);
+      assert.equal((await f.controller.download()).phase,'downloaded');
+      assert.deepEqual(f.calls,['download','inspect']);
+    }finally{f.cleanup();}
+  }
+  const missing=fixture({currentVersion:'1.1.0'});
+  try{missing.manifest.patches=patches;assert.equal((await missing.controller.check()).route,'installer');}finally{missing.cleanup();}
+});
+test('major version jump never uses file patches even when the manifest lists them',async()=>{
+  const f=fixture();
+  try{
+    f.manifest.version='2.0.0';
+    f.manifest.patches=[{fromVersion:'1.2.3',name:'InfiniteCanvas-Files-1.2.3-to-2.0.0.zip',url:'https://github.com/sangui0312/Infinite-Canvas-Desktop/releases/download/v2.0.0/InfiniteCanvas-Files-1.2.3-to-2.0.0.zip',size:10,sha256:'c'.repeat(64)}];
+    f.manifest.patch=f.manifest.patches[0];
+    const found=await f.controller.check();
+    assert.equal(found.route,'installer');
+  }finally{f.cleanup();}
 });
 test('Electron request exposes redirects for validation and abort signals cannot leave a hanging check',async()=>{
   class Request extends EventEmitter{setHeader(){}end(){}abort(){this.emit('abort');this.emit('close');}}

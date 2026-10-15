@@ -110,8 +110,12 @@ class HybridUpdater {
         manifest=await this.transport.json(asset.browser_download_url,true);
         if(manifest.schema!==1||manifest.version!==version||!stable(manifest.minimumShell)||!['files','installer'].includes(manifest.mode))throw Error('混合更新清单无效。');
       }
-      const patch=manifest?.patch;
-      if(manifest?.mode==='files'&&compare(this.shellVersion,manifest.minimumShell)>=0&&patch?.fromVersion===this.state.currentVersion){
+      const candidates=Array.isArray(manifest?.patches)&&manifest.patches.length?manifest.patches:(manifest?.patch?[manifest.patch]:[]);
+      const majorOf=value=>String(value||'').split('.')[0];
+      const patch=manifest?.mode==='files'&&compare(this.shellVersion,manifest.minimumShell)>=0&&majorOf(version)===majorOf(this.state.currentVersion)
+        ?candidates.find(item=>item&&item.fromVersion===this.state.currentVersion)
+        :null;
+      if(patch){
         if(!/^[a-f0-9]{64}$/.test(patch.sha256)||!Number.isSafeInteger(patch.size)||patch.size<=0||patch.size>512*1024*1024||!/^InfiniteCanvas-Files-[0-9.]+-to-[0-9.]+\.zip$/.test(patch.name))throw Error('文件更新包信息无效。');
         releaseAsset(patch.url,version,patch.name);this.patch={...patch,version};
         this.set({phase:'available',route:'files',version,notes:String(manifest.notes||release.body||'').slice(0,15000),releaseName:String(release.name||'').slice(0,200),total:patch.size});

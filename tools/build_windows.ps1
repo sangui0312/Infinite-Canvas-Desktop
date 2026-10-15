@@ -1,4 +1,4 @@
-param([switch]$InstallDependencies, [string]$BaselineManifest)
+param([switch]$InstallDependencies, [string]$BaselineManifest, [string]$BaselineDir = 'release-baselines', [string]$PrimaryBaseline, [switch]$RequireFoundation)
 $ErrorActionPreference = 'Stop'
 $projectRoot = Split-Path -Parent $PSScriptRoot
 $previousOptions = $env:NODE_OPTIONS
@@ -22,11 +22,13 @@ try {
     if ($LASTEXITCODE -ne 0) { throw 'Windows packaging failed.' }
     & node tools/write_update_notes.cjs
     if ($LASTEXITCODE -ne 0) { throw 'Desktop update announcement validation failed.' }
-    if ($BaselineManifest) {
-        & backend/python/python.exe -B -X utf8 tools/build_hybrid_release.py --baseline $BaselineManifest
-    } else {
-        & backend/python/python.exe -B -X utf8 tools/build_hybrid_release.py
-    }
+    $hybridArgs = @('-B','-X','utf8','tools/build_hybrid_release.py')
+    if ($BaselineManifest) { $hybridArgs += @('--baseline', $BaselineManifest) }
+    $baselineDirPath = Join-Path $projectRoot $BaselineDir
+    if (Test-Path -LiteralPath $baselineDirPath) { $hybridArgs += @('--baseline-dir', $baselineDirPath) }
+    if ($PrimaryBaseline) { $hybridArgs += @('--primary', $PrimaryBaseline) }
+    if ($RequireFoundation) { $hybridArgs += @('--require-foundation') }
+    & backend/python/python.exe @hybridArgs
     if ($LASTEXITCODE -ne 0) { throw 'Hybrid release metadata failed.' }
     & backend/python/python.exe -B -X utf8 tools/verify_payload.py
     if ($LASTEXITCODE -ne 0) { throw 'Payload checks failed.' }
