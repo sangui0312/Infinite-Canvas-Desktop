@@ -185,6 +185,8 @@ node tools/check_media.cjs
 5. 每次 Release 都上传完整安装包、blockmap、`latest.yml`、`hybrid-update.json`、`release-tree.json`、可选文件差异 ZIP、校验文件及所需依赖和来源附件，保持完整安装与两种更新路线可用。
 6. 核对附件与哈希后公开 Release，再验证匿名下载和在线版本检测。
 
+打包后可用 `backend/python/python.exe -X utf8 tools/check_runtime_drift.py dist/win-unpacked/resources/backend .test-data/drift-check` 确认后端真实启动一次后程序文件仍与发布基线逐字节一致；本地改写会导致功能文件更新被安全拒绝。
+
 构建命令默认不发布，发布工作由维护者执行。API 配置、个人素材、登录信息、缓存与测试数据排除在 Git 和安装包之外。
 
 ## 问题反馈

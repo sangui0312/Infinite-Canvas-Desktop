@@ -219,7 +219,8 @@ NAS_CONFIG_PASSWORD = os.getenv("NAS_CONFIG_PASSWORD", "")
 async def startup_event():
     global GLOBAL_LOOP
     GLOBAL_LOOP = asyncio.get_running_loop()
-    sync_static_html_versions()
+    # 不在启动时改写 static 页面文件：版本标记由响应中间件动态注入，磁盘文件
+    # 必须与发布基线逐字节一致，桌面功能文件更新（文件包）才能通过基线校验。
     # PSD 导出依赖随完整安装包和服务器更新包分发，不再从 NAS 更新目录补拉。
     try:
         if not PSD_PYTOSHOP_OK:
@@ -1858,35 +1859,6 @@ async def version_static_html_dynamic(request: Request, call_next):
         media_type=response.media_type or "text/html; charset=utf-8",
         headers=headers,
     )
-
-def sync_static_html_versions():
-    version = current_app_version()
-    if not version:
-        return
-    safe_version = urllib.parse.quote(version, safe="._-")
-    try:
-        for name in os.listdir(STATIC_DIR):
-            # 跳过 macOS 在外置硬盘(ExFAT/NTFS)生成的 ._* Apple Double 元数据文件，
-            # 这些是二进制文件，按 UTF-8 读取会抛 UnicodeDecodeError。
-            if name.startswith("._"):
-                continue
-            if not name.lower().endswith(".html"):
-                continue
-            path = os.path.join(STATIC_DIR, name)
-            if not os.path.isfile(path):
-                continue
-            # 单文件容错：某个文件读写失败不应中断整批同步。
-            try:
-                with open(path, "r", encoding="utf-8") as f:
-                    old = f.read()
-                new = versioned_static_html(re.sub(r'([?&]v=)[^"\'`\s<>)]*', rf'\g<1>{safe_version}', old))
-                if new != old:
-                    with open(path, "w", encoding="utf-8", newline="") as f:
-                        f.write(new)
-            except Exception as e:
-                print(f"同步静态页面版本号失败({name}): {e}")
-    except Exception as e:
-        print(f"同步静态页面版本号失败: {e}")
 
 def static_html_response(filename: str):
     path = os.path.join(STATIC_DIR, filename)
