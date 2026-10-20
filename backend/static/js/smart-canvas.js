@@ -5413,6 +5413,8 @@ function handleAssetLibraryUpdatedMessage(data={}){
 // 服务器广播 canvas_updated 时带回 client_id，自己发的就忽略，避免自我刷新。
 const smartClientId = `canvas_smart_${Math.random().toString(36).slice(2, 10)}${Date.now().toString(36).slice(-4)}`;
 let canvasSyncInFlight = false;
+let smartAgentBaseCanvas = null;
+let smartCanvasSavePromise = null;
 let canvasSyncTimer = null;
 let canvasMetaPollTimer = null;
 let connectionLayerRaf = 0;
@@ -5626,6 +5628,19 @@ function mergeSmartConnections(localConns, remoteConns, nodeIds){
 }
 function applyMergedServerCanvas(serverCanvas){
     if(!serverCanvas || !canvas) return false;
+    if(window.SmartAgentMerge && smartAgentBaseCanvas && Number(serverCanvas.revision || 0) > 0){
+        const local = {...canvasForStorage(), nodes:JSON.parse(JSON.stringify(nodes)), viewport:{...viewport}};
+        const merged = window.SmartAgentMerge.merge(smartAgentBaseCanvas,local,serverCanvas);
+        smartAgentBaseCanvas = JSON.parse(JSON.stringify(serverCanvas));
+        const changed = !window.SmartAgentMerge.equal(merged.nodes,serverCanvas.nodes) || !window.SmartAgentMerge.equal(merged.connections,serverCanvas.connections);
+        nodes = (merged.nodes || []).map(normalizeLegacySmartNode).filter(Boolean);
+        canvas = {...canvas,...merged};
+        document.getElementById('smartTitle').textContent = canvas.title || tr('smart.title');
+        render();
+        if(changed) scheduleSave();
+        resumeSmartPendingTasks();
+        return true;
+    }
     const remoteNodes = (Array.isArray(serverCanvas.nodes) ? serverCanvas.nodes : []).map(normalizeLegacySmartNode).filter(Boolean);
     const mergedNodes = mergeSmartNodeLists(nodes, remoteNodes);
     const nodeIds = new Set(mergedNodes.map(n => n.id));
@@ -6219,6 +6234,7 @@ async function loadCanvas(){
         if(!res.ok) return;
         const data = await res.json();
         canvas = data.canvas;
+        smartAgentBaseCanvas = JSON.parse(JSON.stringify(data.canvas));
         rememberCanvasListProject(canvas.project || 'default');
         canvasUsesConnections = Object.prototype.hasOwnProperty.call(canvas || {}, 'connections');
         document.title = canvas.title || tr('canvas.smartCanvas');
@@ -6265,9 +6281,15 @@ async function loadCanvas(){
 }
 function scheduleSave(){
     clearTimeout(saveTimer);
-    saveTimer = setTimeout(saveCanvas, 450);
+    saveTimer = setTimeout(() => saveCanvas().catch(() => {}), 450);
 }
-async function saveCanvas(){
+function saveCanvas(){
+    const task = (smartCanvasSavePromise || Promise.resolve()).catch(() => {}).then(persistSmartCanvas);
+    smartCanvasSavePromise = task;
+    task.then(() => { if(smartCanvasSavePromise === task) smartCanvasSavePromise = null; }, () => { if(smartCanvasSavePromise === task) smartCanvasSavePromise = null; });
+    return task;
+}
+async function persistSmartCanvas(){
     if(!canvasId || !canvas) return;
     savePromptDraftForCurrent();
     nodes.forEach(node => {
@@ -6277,49 +6299,36 @@ async function saveCanvas(){
     canvas.nodes = nodes;
     canvas.settings = settingsForStorage(canvasDefaultSmartSettings || initialSmartSettings);
     canvas.viewport = {...viewport};
-    const storageCanvas = canvasForStorage();
+    const stored = canvasForStorage();
     canvasSyncInFlight = true;
     try {
         const res = await fetch(`/api/canvases/${encodeURIComponent(canvasId)}`, {
-            method:'PUT',
-            headers:{'Content-Type':'application/json'},
-            body:JSON.stringify({
-                title:storageCanvas.title || tr('smart.title'),
-                icon:storageCanvas.icon || 'sparkles',
-                nodes:storageCanvas.nodes || [],
-                connections:storageCanvas.connections || [],
-                viewport:storageCanvas.viewport || {x:0,y:0,scale:1},
-                logs:storageCanvas.logs || [],
-                settings:storageCanvas.settings,
-                base_updated_at:storageCanvas.updated_at || canvas.updated_at || 0,
-                client_id:smartClientId
-            })
+            method:'PUT', headers:{'Content-Type':'application/json'},
+            body:JSON.stringify({title:stored.title || tr('smart.title'),icon:stored.icon || 'sparkles',nodes:stored.nodes || [],connections:stored.connections || [],viewport:stored.viewport,logs:stored.logs || [],settings:stored.settings,base_updated_at:stored.updated_at || 0,base_revision:stored.revision ?? null,client_id:smartClientId})
         });
-        if(res.ok){
-            const data = await res.json();
-            if(data.canvas && data.canvas.updated_at) canvas.updated_at = data.canvas.updated_at;
-        } else if(res.status === 409) {
-            // 冲突：别人先保存了。合并对方的状态（节点 id 合并、图片取并集，谁都不丢），
-            // 然后用对方最新的 updated_at 作为基底重存，把合并结果落盘——而不是直接覆盖对方。
-            const data = await res.json().catch(() => ({}));
-            const serverCanvas = data.detail?.canvas;
-            if(serverCanvas){
-                applyMergedServerCanvas(serverCanvas);
-                nodes.forEach(node => {
-                    node.images = (node.images || []).map(img => mediaItemForStorage(stripImageGenerationMeta(img)));
-                    if(node.runSettings) node.runSettings = settingsForStorage(node.runSettings);
-                });
-                canvas.nodes = nodes;
-            } else if(data.detail?.updated_at) {
-                canvas.updated_at = data.detail.updated_at;
+        const data = await res.json().catch(() => ({}));
+        if(!res.ok){
+            if(res.status === 409 && data.detail?.canvas){
+                applyMergedServerCanvas(data.detail.canvas);
+                clearTimeout(saveTimer);
+                saveTimer = setTimeout(() => saveCanvas().catch(() => {}), 150);
+                throw new Error('画布已同步其他任务的结果，正在保存合并后的修改，请稍后重试。');
             }
-            clearTimeout(saveTimer);
-            saveTimer = setTimeout(saveCanvas, 300);
+            throw new Error(apiErrorMessage(data,'画布保存失败，本地草稿已保留。'));
         }
-    } catch(e) {} finally {
-        canvasSyncInFlight = false;
-    }
+        if(data.canvas){
+            canvas.updated_at = data.canvas.updated_at;
+            canvas.revision = data.canvas.revision;
+            smartAgentBaseCanvas = JSON.parse(JSON.stringify(data.canvas));
+            canvas.agent_deleted_nodes = data.canvas.agent_deleted_nodes || {};
+        }
+        return canvas;
+    } catch(error){
+        toast(String(error.message || '画布保存失败').slice(0,160));
+        throw error;
+    } finally { canvasSyncInFlight = false; }
 }
+
 function imageMetaFromNode(node){
     return {};
 }
@@ -20000,3 +20009,39 @@ window.onload = async () => {
     syncApiKindToggleVisibility();
     render();
 };
+
+// Stable bridge: the Agent only reads context and asks the backend to mutate.
+window.smartAgentCanvas = Object.freeze({
+    getContext(){
+        if(!canvas || !canvasId) return null;
+        const ids = [...new Set([...(selectedIds || []),selectedId].filter(Boolean))];
+        const subject = nodes.find(n => n.id === selectedId);
+        const generation = JSON.parse(JSON.stringify({...settings,...(subject && smartSettingsForNode(subject) || {})}));
+        const provider = resolveChatProviderId(subject?.llmProvider || '');
+        return {canvas_id:canvasId,canvas_revision:Number(canvas.revision || 0),selected_node_ids:ids,nodes:nodes.map(n=>({id:n.id,title:n.title,type:n.type,images:n.images||[],items:n.items||[]})),generation,llm:{provider_id:provider,model:resolveChatModel(subject?.llmModel || '',provider)}};
+    },
+    async flush(){
+        clearTimeout(saveTimer);
+        await saveCanvas();
+        return window.smartAgentCanvas.getContext();
+    },
+    locate(ids){
+        const picked=(Array.isArray(ids)?ids:[ids]).map(id=>nodes.find(n=>n.id===id)).filter(Boolean);
+        if(!picked.length) return;
+        selectedId=picked[0].id; selectedIds=picked.map(n=>n.id);
+        const rect=nodeRect(picked[0]);
+        centerViewportOnWorldPoint({x:Number(picked[0].x||0)+Number(rect.width||0)/2,y:Number(picked[0].y||0)+Number(rect.height||0)/2});
+        render();
+    },
+    async refresh(){
+        if(canvasSyncInFlight || dragState || selectionState) return;
+        const response=await fetch(`/api/canvases/${encodeURIComponent(canvasId)}`);
+        if(!response.ok) throw new Error('无法读取画布最新状态');
+        const data=await response.json();
+        if(Number(data.canvas?.revision||0)>Number(canvas?.revision||0)) applyMergedServerCanvas(data.canvas);
+    },
+    subscribe(listener){
+        const timer=setInterval(()=>listener(window.smartAgentCanvas.getContext()),750);
+        return ()=>clearInterval(timer);
+    }
+});

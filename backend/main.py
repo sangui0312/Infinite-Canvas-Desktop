@@ -29,7 +29,8 @@ import functools
 import html
 import xml.etree.ElementTree as ET
 from typing import List, Dict, Any, Optional, Tuple
-from threading import Lock, Thread
+from threading import Lock, Thread, RLock
+from contextvars import ContextVar
 import httpx
 from PIL import Image, ImageOps
 from io import BytesIO
@@ -88,6 +89,12 @@ DESKTOP_PROTOCOL_VERSION = 1
 DESKTOP_MODE = bool(os.getenv("IC_DESKTOP_DATA_DIR"))
 
 app = FastAPI()
+AGENT_SUBMISSION_OBSERVER = ContextVar("agent_submission_observer", default=None)
+
+async def observe_agent_submission(task_id, kind):
+    observer = AGENT_SUBMISSION_OBSERVER.get()
+    if observer and task_id:
+        await observer(str(task_id), {"query_kind": kind, "api_kind": kind, "submitted_at": time.time()})
 
 app.add_middleware(
     CORSMiddleware,
@@ -361,7 +368,7 @@ QUEUE_LOCK = Lock()
 HISTORY_LOCK = Lock()
 GLOBAL_CONFIG_LOCK = Lock()
 CONVERSATION_LOCK = Lock()
-CANVAS_LOCK = Lock()
+CANVAS_LOCK = RLock()
 LOAD_LOCK = Lock()
 RUNNINGHUB_WORKFLOW_LOCK = Lock()
 NEXT_TASK_ID = 1
@@ -2715,6 +2722,7 @@ class CanvasSaveRequest(BaseModel):
     settings: Dict[str, Any] = {}
     client_id: str = ""
     base_updated_at: int = 0
+    base_revision: Optional[int] = None
 
 class CanvasAssetCheckRequest(BaseModel):
     urls: List[str] = []
@@ -3260,10 +3268,7 @@ def canvas_path(canvas_id):
     return os.path.join(CANVAS_DIR, f"{cleaned}.json")
 
 def save_canvas(canvas):
-    canvas["updated_at"] = now_ms()
-    with CANVAS_LOCK:
-        with open(canvas_path(canvas["id"]), 'w', encoding='utf-8') as f:
-            json.dump(canvas, f, ensure_ascii=False, indent=2)
+    return AGENT_CANVAS_OPS.save(canvas)
 
 def normalize_canvas_kind(kind="classic"):
     return "smart" if str(kind or "").strip().lower() == "smart" else "classic"
@@ -4211,6 +4216,8 @@ async def post_openai_responses(client, url, headers, body):
     try:
         resp = await client.post(url, headers=headers, json=bg_body)
     except httpx.HTTPError as e:
+        if AGENT_SUBMISSION_OBSERVER.get():
+            raise
         print(f"RS background 请求传输失败，改走流式：{e}")
         return await post_openai_responses_stream(client, url, headers, body)
     if resp.status_code in RESPONSES_REJECT_STATUSES:
@@ -6493,6 +6500,8 @@ def image_task_fail_reason(payload):
 
 async def httpx_request_with_transient_retries(client, method, url, attempts=2, retry_delay=1.2, **kwargs):
     attempts = max(1, int(attempts or 1))
+    if AGENT_SUBMISSION_OBSERVER.get() and str(method).upper() not in {"GET", "HEAD"}:
+        attempts = 1
     last_exc = None
     retry_statuses = {429, 502, 503, 504, 520, 522, 524}
     for attempt in range(attempts):
@@ -6525,6 +6534,7 @@ async def fetch_image_task_payload(client, task_id, provider=None):
     return response.json()
 
 async def wait_for_image_task(client, task_id, provider=None):
+    await observe_agent_submission(task_id, "image")
     is_apimart = is_apimart_provider(provider)
     is_tudou_async = is_tudou_async_image_mode(provider)
     timeout = TUDOU_ASYNC_IMAGE_TASK_TIMEOUT if is_tudou_async else APIMART_IMAGE_TASK_TIMEOUT if is_apimart else IMAGE_TASK_TIMEOUT
@@ -11417,6 +11427,8 @@ def is_upstream_overload_response(resp):
 
 async def post_with_overload_retry(client, url, *, retries=3, delay=3.0, **kwargs):
     """上游返回 429/503 或 Too many connections/Error 1040 时自动重试，仍失败返回最后一次响应。"""
+    if AGENT_SUBMISSION_OBSERVER.get():
+        retries = 1
     for attempt in range(retries):
         resp = await client.post(url, **kwargs)
         if resp.status_code < 400 or not is_upstream_overload_response(resp):
@@ -15743,6 +15755,7 @@ def video_status_error_detail(response, phase="", task_id="") -> str:
     return f"{context}\n上游视频接口错误（HTTP {status}）：{body}"
 
 async def wait_for_video_task(client, provider, task_id, submit_url=""):
+    await observe_agent_submission(task_id, "video")
     base_url = video_api_root(provider)
     if not base_url:
         raise HTTPException(status_code=400, detail=f"{provider.get('name') or provider['id']} 未配置 Base URL")
@@ -16989,7 +17002,7 @@ async def canvas_video(payload: CanvasVideoRequest):
                     # 这种情况要继续尝试下一个候选端点（关键修复：以前在这里直接 raise_for_status，
                     # 第一个 /v1 报错就抛出，永远轮不到 /v2，表现为“接口错误”）。
                     # 其它错误（模型不支持/时长/额度等请求被拒）说明端点是存在的，直接抛出交给外层友好提示。
-                    endpoint_missing = response.status_code in (404, 405) or looks_like_html_response(response.text)
+                    endpoint_missing = response.status_code in (404, 405) or (not AGENT_SUBMISSION_OBSERVER.get() and looks_like_html_response(response.text))
                     if endpoint_missing and not is_last:
                         continue
                     response.raise_for_status()
@@ -16997,6 +17010,8 @@ async def canvas_video(payload: CanvasVideoRequest):
                     raw = response.json()
                     break
                 except Exception as exc:
+                    if AGENT_SUBMISSION_OBSERVER.get():
+                        raise HTTPException(502, "视频提交结果无法确认，已停止自动重试，请查询原任务。") from exc
                     last_json_error = exc
                     if looks_like_html_response(response.text):
                         html_response = response
@@ -19101,26 +19116,19 @@ async def batch_crop_asset_library_items(payload: AssetLibraryBatchCropRequest):
 
 @app.put("/api/canvases/{canvas_id}")
 async def update_canvas(canvas_id: str, payload: CanvasSaveRequest):
-    canvas = load_canvas(canvas_id)
-    current_updated_at = int(canvas.get("updated_at") or 0)
-    if payload.base_updated_at and current_updated_at and int(payload.base_updated_at) < current_updated_at:
-        raise HTTPException(status_code=409, detail={
-            "message": "画布已被其他页面更新，已拒绝旧版本覆盖。",
-            "canvas": canvas,
-            "updated_at": current_updated_at,
-        })
-    canvas["title"] = (payload.title or canvas.get("title") or "未命名画布")[:80]
-    canvas["icon"] = (payload.icon or canvas.get("icon") or "layers")[:32]
-    canvas["kind"] = normalize_canvas_kind(canvas.get("kind"))
-    canvas["nodes"] = payload.nodes
-    canvas["connections"] = payload.connections
-    if canvas["kind"] == "smart":
-        canvas["viewport"] = payload.viewport
-    else:
-        canvas["viewport"] = canvas.get("viewport") or {"x": 0, "y": 0, "scale": 1}
-    canvas["logs"] = payload.logs[-500:]
-    canvas["settings"] = payload.settings or {}
-    save_canvas(canvas)
+    # One short critical section covers read, version check, and atomic replace.
+    with CANVAS_LOCK:
+        canvas = load_canvas(canvas_id)
+        canvas["title"] = (payload.title or canvas.get("title") or "未命名画布")[:80]
+        canvas["icon"] = (payload.icon or canvas.get("icon") or "layers")[:32]
+        canvas["kind"] = normalize_canvas_kind(canvas.get("kind"))
+        canvas["nodes"] = payload.nodes
+        canvas["connections"] = payload.connections
+        if canvas["kind"] == "smart":
+            canvas["viewport"] = payload.viewport
+        canvas["logs"] = payload.logs[-500:]
+        canvas["settings"] = payload.settings or {}
+        AGENT_CANVAS_OPS.save(canvas, expected_revision=payload.base_revision, base_updated_at=payload.base_updated_at)
     await manager.broadcast_canvas_updated(canvas_id, int(canvas.get("updated_at") or now_ms()), payload.client_id)
     return {"canvas": canvas}
 
@@ -20843,6 +20851,21 @@ def run_workflow(name: str, payload: WorkflowRunRequest):
         client_id=payload.client_id or str(uuid.uuid4()),
     )
     return generate(req)
+
+# The independent desktop Agent shares the existing adapters and data root.
+# BASE_DIR is explicit for importlib-based launchers as well as the packaged app.
+if BASE_DIR not in sys.path:
+    sys.path.insert(0, BASE_DIR)
+AGENT_RUNTIME_DIR = os.path.join(BASE_DIR, "static", "agent-runtime")
+# Keep the updater's program inventory immutable on old and new desktop shells.
+sys.dont_write_bytecode = True
+if AGENT_RUNTIME_DIR not in sys.path:
+    sys.path.insert(0, AGENT_RUNTIME_DIR)
+from agent_canvas_ops import CanvasOperations
+from canvas_agent_host import create_host as create_canvas_agent_host
+from canvas_agent import install_agent
+AGENT_CANVAS_OPS = CanvasOperations(canvas_path, CANVAS_LOCK)
+CANVAS_AGENT_SERVICE = install_agent(app, create_canvas_agent_host(sys.modules[__name__], AGENT_CANVAS_OPS))
 
 if __name__ == "__main__":
     import uvicorn

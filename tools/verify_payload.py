@@ -37,7 +37,11 @@ def main():
                 'static/js/api-settings.js', 'static/css/api-settings.css',
                 'static/js/desktop-updates.js', 'static/desktop-update-notes.json',
                 'legacy_import.py', 'desktop-app-version.json',
-                'static/js/desktop-storage.js', 'static/js/desktop-legacy-import.js']
+                'static/js/desktop-storage.js', 'static/js/desktop-legacy-import.js',
+                'static/agent-runtime/agent_canvas_ops.py', 'static/agent-runtime/canvas_agent_host.py',
+                'static/agent-runtime/canvas_agent/service.py', 'static/agent-runtime/canvas_agent/personas.py',
+                'static/agent-runtime/canvas_agent/planning.py', 'static/js/smart-agent.js',
+                'static/js/smart-agent-merge.js', 'static/css/smart-agent.css']
     for rel in required:
         file = payload / rel
         if not file.is_file() or digest(file) != digest(source / rel):

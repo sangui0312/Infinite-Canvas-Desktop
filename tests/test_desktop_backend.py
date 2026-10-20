@@ -68,6 +68,7 @@ class BackendTests(unittest.TestCase):
         (cls.app_dir / "workflows" / "default.json").write_text("{}", encoding="utf-8")
         (cls.app_dir / "VERSION").write_text("2026.10.08", encoding="utf-8")
         shutil.copy2(ROOT / "backend" / "main.py", cls.app_dir / "main.py")
+        shutil.copytree(ROOT / "backend/static/agent-runtime", cls.app_dir / "static/agent-runtime", ignore=shutil.ignore_patterns("__pycache__"))
         cls.env = patch.dict(os.environ, {"IC_DESKTOP_DATA_DIR": str(cls.data_dir), "IC_DESKTOP_INSTANCE": "test-instance", "IC_DESKTOP_SHELL_VERSION": "0.1.0"})
         cls.env.start()
         spec = importlib.util.spec_from_file_location("isolated_desktop_backend", cls.app_dir / "main.py")
@@ -92,6 +93,49 @@ class BackendTests(unittest.TestCase):
         self.assertFalse((self.app_dir / "API").exists())
         self.assertFalse((self.app_dir / "data").exists())
         self.assertFalse((self.app_dir / "assets").exists())
+
+    def test_agent_routes_actual_host_delivery_and_undo(self):
+        from fastapi.testclient import TestClient
+        import time
+        m = self.module
+        canvas = {"id":"agent-integration", "kind":"smart", "title":"Agent test", "nodes":[], "connections":[], "project":"default"}
+        m.save_canvas(canvas)
+        service = m.CANVAS_AGENT_SERVICE
+        plan = {"summary":"制作一张图片", "steps":[{"id":"one","title":"图片","kind":"image","prompt":"test image","provider_id":"apimart","model":"gpt-image-2","references":[],"settings":{"ratio":"1:1","resolution":"1k"}}]}
+        providers = [{"id":"apimart","name":"APIMART","base_url":"https://api.apimart.ai","enabled":True,"protocol":"openai","chat_models":["test-llm"],"image_models":["gpt-image-2"],"video_models":[]}]
+        async def generate(payload):
+            target = m.output_path_for("agent-integration.png")
+            m.Image.new("RGB",(64,64),(30,40,50)).save(target)
+            return {"images":[m.output_url_for("agent-integration.png")],"image_items":[],"task_id":"test-immediate"}
+        with patch.object(m,'load_api_providers',return_value=providers), patch.object(m,'build_online_image_result',side_effect=generate) as submit, patch.dict(service.host,{"llm":AsyncMock(return_value={"text":json.dumps(plan,ensure_ascii=False)})}):
+            with TestClient(m.app) as client:
+                session = client.post('/api/canvas-agent/sessions',json={"canvas_id":canvas['id']}).json()['session']
+                body={"client_request_id":"integration-message", "text":"制作一张图片", "context":{"selected_node_ids":[],"scope":"selection","canvas_revision":canvas['revision']},"llm":{"provider_id":"apimart","model":"test-llm"},"generation":{"provider_id":"apimart","model":"gpt-image-2","apiKind":"image","ratio":"square","resolution":"1k"}}
+                response=client.post(f"/api/canvas-agent/sessions/{session['id']}/messages",json=body)
+                self.assertEqual(response.status_code,202,response.text)
+                run_id=response.json()['run_id']
+                def await_state(states):
+                    for _ in range(100):
+                        run=client.get(f'/api/canvas-agent/runs/{run_id}').json()['run']
+                        if run['status'] in states:return run
+                        time.sleep(.02)
+                    self.fail('Agent did not settle: '+str(run))
+                run=await_state({'awaiting_approval','needs_attention'})
+                self.assertEqual(run['status'],'awaiting_approval',run)
+                action={"request_id":"integration-approve","action":"approve","expected_revision":run['revision'],"plan_revision":run['plan']['revision']}
+                approved=client.post(f'/api/canvas-agent/runs/{run_id}/actions',json=action)
+                self.assertEqual(approved.status_code,200,approved.text)
+                done=await_state({'completed','partial','needs_attention','failed'})
+                self.assertEqual(done['status'],'completed',done)
+                self.assertEqual(submit.call_count,1)
+                self.assertEqual(len(m.load_canvas(canvas['id'])['nodes']),1)
+                # Replaying the client request must not start a second generation.
+                duplicate=client.post(f"/api/canvas-agent/sessions/{session['id']}/messages",json=body)
+                self.assertEqual(duplicate.json()['run_id'],run_id)
+                self.assertEqual(submit.call_count,1)
+                undone=client.post(f'/api/canvas-agent/runs/{run_id}/undo',json={'request_id':'integration-undo'})
+                self.assertEqual(undone.status_code,200,undone.text)
+                self.assertEqual(m.load_canvas(canvas['id'])['nodes'],[])
 
     def test_removed_legacy_update_routes(self):
         routes = {route.path for route in self.module.app.routes}
