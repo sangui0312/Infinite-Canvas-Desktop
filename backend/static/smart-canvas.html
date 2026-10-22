@@ -33,11 +33,9 @@
                         <div class="composer-head-left">
                             <select id="engineSelect" class="engine-select">
                                 <option value="api" data-i18n="smart.engineApi">API生成</option>
-                                <option value="volcengine" data-i18n="smart.engineVolcengine">火山引擎</option>
-                                <!-- 已隐藏引擎（保留代码，勿删）：modelscope / comfy / runninghub -->
+                                <!-- 已停用的旧引擎 -->
                                 <!-- <option value="modelscope" data-i18n="smart.engineMs">MS生成</option>
-                                <option value="comfy" data-i18n="smart.engineComfy">ComfyUI生成</option>
-                                <option value="runninghub" data-i18n="smart.engineRh">RunningHub</option> -->
+                                <option value="comfy" data-i18n="smart.engineComfy">ComfyUI生成</option> --> --> -->
                             </select>
                             <div id="apiKindToggle" class="kind-toggle" style="display:none">
                                 <button type="button" data-kind="image" class="active"><i data-lucide="image"></i><span data-i18n="smart.kindImage">图片</span></button>
@@ -506,6 +504,7 @@
         <div id="toast" class="toast"></div>
         <div id="mentionPreview" class="mention-preview"><img alt="preview"></div>
     </div>
+    <script src="/static/js/smart-director-model.js"></script>
     <script src="/static/js/smart-director.js?v=2026.10.08.1790488903"></script>
     <script src="/static/js/smart-agent-merge.js"></script>
     <script src="/static/js/smart-canvas.js?v=2026.10.08.1791444516"></script>

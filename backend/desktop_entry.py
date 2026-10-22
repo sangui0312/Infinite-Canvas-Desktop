@@ -169,7 +169,7 @@ class DesktopGuard:
             self.stop()
             return
         generation = kind == "http" and scope.get("method") == "POST" and (
-            scope["path"] in {"/generate", "/api/generate", "/api/ms/generate", "/api/angle/generate", "/api/online-image", "/api/canvas-video", "/api/chat", "/api/chat/agent", "/api/chat/stream", "/api/runninghub/submit", "/api/runninghub/workflow-submit"}
+            scope["path"] in {"/generate", "/api/generate", "/api/ms/generate", "/api/angle/generate", "/api/online-image", "/api/canvas-video", "/api/chat", "/api/chat/agent", "/api/chat/stream"}
             or (scope["path"].startswith("/api/workflows/") and scope["path"].endswith("/run")))
         if generation:
             self.inflight_generation += 1

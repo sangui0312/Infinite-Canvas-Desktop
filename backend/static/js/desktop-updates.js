@@ -21,6 +21,26 @@
         const el = $(id);
         if (!el) return;
         el.replaceChildren();
+        const groups = window.DesktopReleaseNotes?.parse(value);
+        el.classList.toggle('desktop-version-notes', Boolean(groups));
+        if (groups) {
+            for (const group of groups) {
+                const section = document.createElement('li');
+                const title = document.createElement('strong');
+                title.className = 'desktop-note-version';
+                title.textContent = 'v' + group.version;
+                const items = document.createElement('ul');
+                items.className = 'desktop-note-items';
+                for (const item of group.items) {
+                    const li = document.createElement('li');
+                    li.textContent = item;
+                    items.append(li);
+                }
+                section.append(title, items);
+                el.append(section);
+            }
+            return;
+        }
         if (value) {
             const li = document.createElement('li');
             li.textContent = String(value);

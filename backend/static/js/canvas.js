@@ -436,7 +436,7 @@ let apiProviders = [];
 let comfyBackendCount = 1;
 let comfyWorkflows = [];
 let comfyWorkflowCache = {};
-let runningHubWorkflowCache = {};
+
 let managedProviderId = 'comfly';
 let localImageModels = [];
 let localChatModels = [];
@@ -674,23 +674,19 @@ function uniqueModels(list){
 function defaultApiProviders(){
     return [{id:'comfly', name:'Comfly', base_url:'', enabled:true, image_models:imageModels, chat_models:chatModels, video_models:videoModels.length ? videoModels : DEFAULT_VIDEO_MODELS, has_key:false, key_preview:''}];
 }
-function isRunningHubProvider(provider){
-    const id = String(provider?.id || '').trim().toLowerCase();
-    const protocol = String(provider?.protocol || '').trim().toLowerCase();
-    const name = String(provider?.name || '').trim().toLowerCase();
-    return id === 'runninghub' || protocol === 'runninghub' || name === 'runninghub' || id === 'rh';
-}
+
 function normalizeProviderId(value){
     return String(value || '').trim().toLowerCase().replace(/[^a-z0-9_-]/g, '-').replace(/-+/g, '-').slice(0, 40);
 }
 // 前端不参与默认/候选的平台（对应 API 设置隐藏项；数据与代码保留）
-const CANVAS_HIDDEN_API_PROVIDERS = new Set(['modelscope', 'volcengine', 'runninghub']);
+const CANVAS_HIDDEN_API_PROVIDERS = new Set(['modelscope']);
 function imageApiProviders(){
     const providers = (apiProviders.length ? apiProviders : defaultApiProviders())
         .filter(p => !CANVAS_HIDDEN_API_PROVIDERS.has(p.id) && p.enabled !== false && (p.image_models || []).length);
     return providers;
 }
 function providerById(id){
+    if(id && id !== 'comfly' && !apiProviders.some(p => p.id === id)) return {id, name:'平台不可用', image_models:[], chat_models:[], video_models:[]};
     return (apiProviders.length ? apiProviders : defaultApiProviders()).find(p => p.id === id) || imageApiProviders()[0] || defaultApiProviders()[0];
 }
 function resolveProviderId(id){
@@ -703,6 +699,7 @@ function chatApiProviders(){
 }
 function resolveChatProviderId(id){
     const providers = chatApiProviders();
+    if(id && id !== 'comfly' && !providers.some(p => p.id === id)) return id;
     return providers.find(p => p.id === id)?.id || providers[0]?.id || 'comfly';
 }
 function chatProviderOptions(selectedId){
@@ -715,6 +712,7 @@ function providerChatModels(providerId){
 }
 function resolveImageProviderId(id){
     const providers = imageApiProviders();
+    if(id && id !== 'comfly' && !providers.some(p => p.id === id)) return id;
     return providers.find(p => p.id === id)?.id || providers[0]?.id || '';
 }
 function providerOptions(selectedId){
@@ -742,6 +740,7 @@ function videoApiProviders(){
 }
 function resolveVideoProviderId(id){
     const providers = videoApiProviders();
+    if(id && id !== 'comfly' && !providers.some(p => p.id === id)) return id;
     return providers.find(p => p.id === id)?.id || providers[0]?.id || 'comfly';
 }
 function videoProviderOptions(selectedId){
@@ -1639,12 +1638,6 @@ async function loadConfig(){
         } catch(_) {
             comfyWorkflows = [];
         }
-        runningHubWorkflowCache = {};
-        const rhProvider = apiProviders.find(p => p.id === 'runninghub');
-        const rhWorkflowIds = (rhProvider?.rh_workflows || []).map(item => String(item.workflowId || item.id || '').trim()).filter(Boolean);
-        await Promise.all(rhWorkflowIds.map(async workflowId => {
-            try { await ensureRunningHubWorkflow(workflowId); } catch(_) {}
-        }));
     } catch(e) {
         apiProviders = defaultApiProviders();
     }
@@ -9902,67 +9895,14 @@ function renderVideoImageInputs(list, node, imageInputs){
     });
     refreshIcons();
 }
-function validRunningHubWorkflowId(workflowId){
-    return String(workflowId || '').trim();
-}
-function currentRunningHubWorkflow(node){
-    const workflowId = validRunningHubWorkflowId(node.workflowId || '');
-    return runningHubWorkflowCache[workflowId] || null;
-}
-async function ensureRunningHubWorkflow(workflowId){
-    workflowId = validRunningHubWorkflowId(workflowId);
-    if(!workflowId) return null;
-    if(runningHubWorkflowCache[workflowId]) return runningHubWorkflowCache[workflowId];
-    const res = await fetch(`/api/runninghub/workflows/${encodeURIComponent(workflowId)}`);
-    if(!res.ok){
-        delete runningHubWorkflowCache[workflowId];
-        return null;
-    }
-    const data = await res.json();
-    runningHubWorkflowCache[workflowId] = data.workflow || null;
-    return runningHubWorkflowCache[workflowId];
-}
-const RH_KNOWN_FIELD_OPTIONS = {
-    aspectRatio:['1:1','16:9','9:16','4:3','3:4','4:5','5:4','3:2','2:3','21:9','9:21'],
-    aspect_ratio:['1:1','16:9','9:16','4:3','3:4','4:5','5:4','3:2','2:3','21:9','9:21'],
-    ratio:['1:1','16:9','9:16','21:9','9:21','4:3','3:4','4:5','5:4','3:2','2:3'],
-    resolution:['1k','2k','4k','8k'],
-    size:['512','768','1024','1280','1536','2048'],
-    mode:['text2img','img2img'],
-    quality:['low','medium','high','best'],
-    instanceType:['default','plus','pro'],
-    instance_type:['default','plus','pro'],
-    precision:['fp16','fp32','bf16'],
-    scheduler:['normal','karras','exponential','sgm_uniform','simple','ddim_uniform'],
-    sampler:['euler','euler_ancestral','heun','dpm_2','dpm_2_ancestral','lms','dpmpp_2m','dpmpp_sde','ddim','uni_pc']
-};
-function runningHubProvider(){
-    const provider = (apiProviders || []).find(p => p.id === 'runninghub');
-    return provider || null;
-}
-function runningHubEntries(kind){
-    const provider = runningHubProvider();
-    if(kind === 'model'){
-        return uniqueModels(provider?.image_models || []).map(model => ({
-            id:model,
-            model,
-            title:model,
-            enabled:true,
-            source:'model'
-        }));
-    }
-    const key = kind === 'workflow' ? 'rh_workflows' : 'rh_apps';
-    return Array.isArray(provider?.[key]) ? provider[key].filter(item => item?.enabled !== false && item?.hidden !== true) : [];
-}
-function runningHubEntryId(entry, kind){
-    if(kind === 'model') return String(typeof entry === 'string' ? entry : (entry?.model || entry?.id || entry?.name || '')).trim();
-    return String(kind === 'workflow' ? (entry?.workflowId || entry?.id || '') : (entry?.appId || entry?.id || '')).trim();
-}
-function runningHubEntryLabel(entry, kind){
-    const id = runningHubEntryId(entry, kind);
-    if(kind === 'model') return entry?.title || entry?.name || id;
-    return entry?.title || entry?.name || (kind === 'workflow' ? `工作流 ${id.slice(-6)}` : `AI 应用 ${id.slice(-6)}`);
-}
+
+
+
+
+
+
+
+
 
 const CANVAS_GENERATOR_TYPES = ['generator','video','layers'];
 const CANVAS_IMAGE_OUTPUT_TYPES = ['generator'];

@@ -80,7 +80,7 @@
           <div class="panel-head">
             <div class="panel-title">
               <strong>生成</strong>
-              <span>API / MS / RH / ComfyUI</span>
+              <span>API / MS / ComfyUI</span>
             </div>
           </div>
 
@@ -88,7 +88,6 @@
             <div id="genModes" class="sources compact">
               <button class="seg active" type="button" data-mode="api">API</button>
               <button class="seg" type="button" data-mode="ms">MS</button>
-              <button class="seg" type="button" data-mode="rh">RH</button>
               <button class="seg last" type="button" data-mode="comfy">ComfyUI</button>
             </div>
 
@@ -97,11 +96,6 @@
               <sp-picker id="genModel" size="s"><sp-menu slot="options"></sp-menu></sp-picker>
             </div>
 
-            <div id="genRhBar" class="hidden workflow-box">
-              <div class="gen-label">RunningHub 工作流</div>
-              <sp-picker id="genRhWorkflow" size="s"><sp-menu slot="options"></sp-menu></sp-picker>
-              <label class="gen-check"><input id="genRhWallet" type="checkbox"> 使用钱包扣费</label>
-            </div>
 
             <div id="genComfyBar" class="hidden workflow-box">
               <div class="gen-label">ComfyUI 工作流</div>

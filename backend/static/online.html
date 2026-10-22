@@ -402,7 +402,7 @@ function gpt25ExtParams(source={}, refs=[]){
         }
         function imageProviders(){
             const list = (apiProviders || []).filter(p => p.enabled !== false && String(p.id || '').toLowerCase() !== 'modelscope' && (
-                (p.image_models || []).length || (p.rh_apps || []).length || (p.rh_workflows || []).length
+                (p.image_models || []).length || (([])).length || (([])).length
             ));
             return list.length ? list : [{id:'comfly', name:'Comfly', image_models:[models.gpt, models.nano]}];
         }
@@ -412,44 +412,17 @@ function gpt25ExtParams(source={}, refs=[]){
         function providerModels(id){
             return uniqueModels(providerById(id)?.image_models || [models.gpt]);
         }
-        /* ---- RunningHub：同一平台下同步模型 API / 工作流 / AI 应用。
-         * 模型 API 直接提交原始模型名；value=app:ID / workflow:ID 走 RH 应用/工作流路径。 */
-        function runningHubEntryId(entry, kind){
-            if(!entry || typeof entry !== 'object') return '';
-            const raw = kind === 'model' ? (entry.model || entry.id || entry.name)
-                : kind === 'workflow' ? (entry.workflowId || entry.id)
-                : (entry.appId || entry.webappId || entry.id);
-            return String(raw || '').trim();
-        }
-        function runningHubEntries(id){
-            const p = providerById(id) || {};
-            const collect = (list, kind) => (list || [])
-                .filter(e => e && e.enabled !== false && e.hidden !== true)
-                .map(e => ({ kind, id: runningHubEntryId(e, kind), title: String(e.title || e.note || '').trim() }))
-                .filter(e => e.id);
-            const models = uniqueModels(p.image_models || []).map(model => ({kind:'model', id:model, title:model}));
-            return [...models, ...collect(p.rh_workflows, 'workflow'), ...collect(p.rh_apps, 'app')];
-        }
-        function isRunningHubProvider(id){ return providerProtocol(id) === 'runninghub'; }
+
+
+
+
         function renderProviderControls(){
             const providerSelect = document.getElementById('providerSelect');
             const modelSelect = document.getElementById('modelSelect');
             const providers = imageProviders();
             if(!providers.some(p => p.id === provider)) provider = providers[0]?.id || 'comfly';
             providerSelect.innerHTML = providers.map(p => `<option value="${escapeHtml(p.id)}" ${p.id === provider ? 'selected' : ''}>${escapeHtml(p.name || p.id)}</option>`).join('');
-            if(isRunningHubProvider(provider)){
-                const entries = runningHubEntries(provider);
-                const keys = entries.map(e => e.kind === 'model' ? e.id : `${e.kind}:${e.id}`);
-                if(!keys.includes(selectedModel)) selectedModel = keys[0] || '';
-                modelSelect.innerHTML = entries.length
-                    ? entries.map(e => {
-                        const key = e.kind === 'model' ? e.id : `${e.kind}:${e.id}`;
-                        const tag = e.kind === 'model' ? '模型 API' : e.kind === 'workflow' ? tr('online.rhWorkflow') : tr('online.rhApp');
-                        const label = e.title || e.id;
-                        return `<option value="${escapeHtml(key)}" ${key === selectedModel ? 'selected' : ''}>${escapeHtml(`[${tag}] ${label}`)}</option>`;
-                    }).join('')
-                    : `<option value="">${escapeHtml(tr('online.rhNoEntries'))}</option>`;
-            } else {
+            {
                 const modelsForProvider = providerModels(provider);
                 if(!modelsForProvider.includes(selectedModel)) selectedModel = modelsForProvider[0] || models.gpt;
                 modelSelect.innerHTML = modelsForProvider.map(m => `<option value="${escapeHtml(m)}" ${m === selectedModel ? 'selected' : ''}>${escapeHtml(m)}</option>`).join('');
@@ -466,18 +439,20 @@ function gpt25ExtParams(source={}, refs=[]){
             const pid = String(p.id || '').toLowerCase();
             const base = String(p.base_url || '').toLowerCase();
             if(proto === 'modelscope' || pid === 'modelscope') return 'modelscope';
-            if(proto === 'runninghub' || pid === 'runninghub') return 'runninghub';
+
             if(proto === 'jimeng' || pid === 'jimeng') return 'jimeng';
-            if(proto === 'volcengine' || pid === 'volcengine') return 'volcengine';
+
             if(proto === 'gemini') return 'gemini';
             if(proto === 'apimart' || base.includes('apimart.ai')) return 'apimart';
             return 'api';
         }
         const PROTOCOL_BADGE = {
-            api:'online.modeApi', apimart:'online.modeApi', modelscope:'online.modeModelscope',
-            runninghub:'online.modeRunningHub', jimeng:'online.modeJimeng',
-            volcengine:'online.modeVolcengine', gemini:'online.modeGemini'
-        };
+    api:'online.modeApi',
+    apimart:'online.modeApi',
+    modelscope:'online.modeModelscope',
+    jimeng:'online.modeJimeng',
+    gemini:'online.modeGemini'
+};
         // 仅 OpenAI / APIMart（gpt-image 系）后端会消费 quality；其它协议忽略，隐藏以免误导。
         const QUALITY_PROTOCOLS = new Set(['api','apimart']);
         function updateAdaptivePanel(){
@@ -491,10 +466,9 @@ function gpt25ExtParams(source={}, refs=[]){
             if(qf) qf.style.display = QUALITY_PROTOCOLS.has(proto) && !isGptImage25ExtModel(selectedModel) ? '' : 'none';
             const qs = document.getElementById('qualitySelect');
             if(qs) qs.value = quality;
-            // RunningHub 每次出图都是一次完整工作流运行，隐藏数量并固定为 1，避免误触发多次昂贵任务。
-            if(proto === 'runninghub') outputCount = 1;
+
             const cf = document.getElementById('countField');
-            if(cf) cf.style.display = (proto === 'runninghub') ? 'none' : '';
+            if(cf) cf.style.display = ('');
             const cs = document.getElementById('countSelect');
             if(cs) cs.value = String(outputCount);
             syncExtControls();

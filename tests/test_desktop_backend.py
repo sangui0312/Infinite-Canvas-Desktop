@@ -11,6 +11,7 @@ import sys
 import tempfile
 import types
 import unittest
+from contextlib import closing
 from unittest.mock import patch, AsyncMock
 import zipfile
 
@@ -61,10 +62,9 @@ class BackendTests(unittest.TestCase):
         cls.temporary = tempfile.TemporaryDirectory(prefix="backend-test-", dir=ROOT / "tests")
         cls.root = Path(cls.temporary.name)
         cls.app_dir, cls.data_dir = cls.root / "app", cls.root / "userdata"
-        (cls.app_dir / "static" / "runninghub").mkdir(parents=True)
+        (cls.app_dir / "static").mkdir(parents=True)
         (cls.app_dir / "workflows").mkdir()
         (cls.app_dir / "static" / "index.html").write_text("old-page", encoding="utf-8")
-        (cls.app_dir / "static" / "runninghub" / "api_providers.json").write_text("[]", encoding="utf-8")
         (cls.app_dir / "workflows" / "default.json").write_text("{}", encoding="utf-8")
         (cls.app_dir / "VERSION").write_text("2026.10.08", encoding="utf-8")
         shutil.copy2(ROOT / "backend" / "main.py", cls.app_dir / "main.py")
@@ -83,7 +83,7 @@ class BackendTests(unittest.TestCase):
 
     def test_data_root_and_no_nas_startup(self):
         m = self.module
-        for name in ("OUTPUT_DIR", "ASSETS_DIR", "HISTORY_FILE", "API_ENV_FILE", "DATA_DIR", "GLOBAL_CONFIG_FILE", "WORKFLOW_DIR", "STATIC_RUNNINGHUB_API_PROVIDERS_FILE", "STATIC_RUNNINGHUB_MODEL_REGISTRY_FILE"):
+        for name in ("OUTPUT_DIR", "ASSETS_DIR", "HISTORY_FILE", "API_ENV_FILE", "DATA_DIR", "GLOBAL_CONFIG_FILE", "WORKFLOW_DIR"):
             self.assertIn(self.data_dir, Path(getattr(m, name)).parents)
         self.assertEqual(Path(m.STATIC_DIR), self.app_dir / "static")
         self.assertFalse(hasattr(m, "NAS_CONFIG_ROOT"))
@@ -93,6 +93,63 @@ class BackendTests(unittest.TestCase):
         self.assertFalse((self.app_dir / "API").exists())
         self.assertFalse((self.app_dir / "data").exists())
         self.assertFalse((self.app_dir / "assets").exists())
+
+    def test_retired_provider_records_are_not_injected_or_exposed(self):
+        m = self.module
+        target = self.root / 'retired-provider-fixture.json'
+        active = {'id': 'apimart', 'name': 'APIMART', 'protocol': 'apimart', 'base_url': 'https://api.apimart.ai', 'image_models': ['gpt-image-2.5-ext'], 'chat_models': ['chat'], 'video_models': ['seedance2.0']}
+        records = [active, {'id': 'runninghub'}, {'id': 'volcengine'}, {'id': 'legacy-custom', 'protocol': 'volcengine'}, {'id': 'legacy-host', 'base_url': 'https://www.runninghub.ai'}, {'id': 'legacy-ark', 'base_url': 'https://ark.cn-beijing.volces.com/api/v3'}]
+        original = json.dumps(records).encode('utf-8')
+        target.write_bytes(original)
+        with patch.object(m, 'API_PROVIDERS_FILE', str(target)):
+            self.assertEqual(m.default_api_providers(), [])
+            self.assertEqual([p['id'] for p in m.load_api_providers()], ['apimart'])
+            self.assertEqual([p['id'] for p in m.public_api_providers()], ['apimart'])
+            self.assertEqual(m.get_api_provider('comfly')['id'], 'apimart')
+            self.assertEqual(target.read_bytes(), original)
+            for old in ('runninghub', 'volcengine', 'rh', 'legacy-custom', 'missing'):
+                with self.assertRaises(m.HTTPException):
+                    m.get_api_provider(old)
+            target.write_text('[]', encoding='utf-8')
+            self.assertEqual(m.load_api_providers(), [])
+
+    def test_last_custom_provider_can_be_deleted_and_stays_empty_after_reload(self):
+        m = self.module
+        from fastapi.testclient import TestClient
+        target = self.root / 'empty-provider-fixture.json'
+        target.write_text('[]', encoding='utf-8')
+        with patch.object(m, 'API_PROVIDERS_FILE', str(target)), patch.object(m, 'update_env_values') as write_keys, patch.object(m.httpx, 'AsyncClient', side_effect=AssertionError('must not contact upstream')):
+            with closing(TestClient(m.app)) as client:
+                created = client.put('/api/providers', json=[{'id': 'custom-api', 'name': 'Custom', 'protocol': 'openai'}])
+                self.assertEqual(created.status_code, 200)
+                self.assertEqual([p['id'] for p in created.json()['providers']], ['custom-api'])
+                deleted = client.put('/api/providers', json=[])
+                self.assertEqual(deleted.status_code, 200)
+                self.assertEqual(deleted.json()['providers'], [])
+                self.assertEqual(client.get('/api/providers').json()['providers'], [])
+                self.assertEqual(json.loads(target.read_text(encoding='utf-8')), [])
+                write_keys.assert_not_called()
+
+    def test_retired_provider_requests_are_blocked_before_network_or_writes(self):
+        m = self.module
+        from fastapi.testclient import TestClient
+        with patch.object(m.httpx, 'AsyncClient', side_effect=AssertionError('must not contact upstream')), patch.object(m, 'update_env_values') as write_keys, patch.object(m, 'save_api_providers') as write_config:
+            with closing(TestClient(m.app)) as client:
+                for old in ('runninghub', 'volcengine'):
+                    for url in ('/api/providers/test-connection', '/api/providers/probe-async', '/api/providers/fetch-models'):
+                        response = client.post(url, json={'provider_id': old, 'protocol': old, 'base_url': 'https://invalid.example'})
+                        self.assertEqual(response.status_code, 410, (url, response.text))
+                    for url in ('/api/online-image', '/api/canvas-video'):
+                        response = client.post(url, json={'provider_id': old, 'prompt': 'offline regression'})
+                        self.assertEqual(response.status_code, 410, (url, response.text))
+                    response = client.put('/api/providers', json=[{'id': old, 'name': old, 'protocol': old}])
+                    self.assertEqual(response.status_code, 410, response.text)
+            write_keys.assert_not_called()
+            write_config.assert_not_called()
+        paths = {route.path for route in m.app.routes}
+        self.assertFalse(any('/runninghub/' in path for path in paths))
+        self.assertFalse(any(name.startswith(('runninghub_', 'volcengine_', 'generate_runninghub_', 'generate_volcengine_')) for name in vars(m)))
+        self.assertFalse((ROOT / 'backend/static/runninghub/api_providers.json').exists())
 
     def test_agent_routes_actual_host_delivery_and_undo(self):
         from fastapi.testclient import TestClient

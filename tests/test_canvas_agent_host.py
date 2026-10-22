@@ -201,7 +201,7 @@ class HostTests(unittest.IsolatedAsyncioTestCase):
         # Extract only pure local conversion helpers; never import application state.
         import ast
         source = (Path(__file__).resolve().parents[1] / "backend" / "main.py").read_text(encoding="utf-8-sig")
-        names = {"apimart_video_duration", "apimart_veo31_duration", "apimart_veo31_aspect", "apimart_veo31_resolution", "apimart_video_size", "volcengine_video_duration", "volcengine_video_resolution"}
+        names = {"apimart_video_duration", "apimart_veo31_duration", "apimart_veo31_aspect", "apimart_veo31_resolution", "apimart_video_size"}
         tree = ast.parse(source)
         pure = ast.Module(body=[n for n in tree.body if isinstance(n, ast.FunctionDef) and n.name in names], type_ignores=[])
         namespace = {}

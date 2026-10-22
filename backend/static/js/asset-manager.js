@@ -1081,13 +1081,13 @@ function currentPromptItems(){
     });
 }
 // 认证支持的平台键（与后端 AVATAR_SUPPORTED_PLATFORMS 保持一致；新增平台时同步）
-const AVATAR_SUPPORTED_PLATFORMS = ['apimart', 'volcengine'];
-const AVATAR_PLATFORM_LABELS = {apimart:'APIMart', volcengine:'火山引擎'};
+const AVATAR_SUPPORTED_PLATFORMS = ['apimart'];
+const AVATAR_PLATFORM_LABELS = {apimart:'APIMart'};
 function providerAvatarPlatform(p){
     const proto = String(p?.protocol || '').toLowerCase();
     const base = String(p?.base_url || '').toLowerCase();
     if(proto === 'apimart' || base.includes('apimart.ai')) return 'apimart';
-    if(proto === 'volcengine') return 'volcengine';
+
     return '';
 }
 function providerAvatarSupported(p){

@@ -128,9 +128,9 @@ def create_host(module, canvas_ops):
                 cap.update(ratios=["21:9", "16:9", "4:3", "1:1", "3:4", "9:16", "adaptive"], resolutions=["768p", "2k"], durations=list(range(4, 16)), max_references=9, recoverable=True)
             elif apimart and name in ("veo3.1-fast", "veo3.1-quality", "veo3.1-lite"):
                 cap.update(ratios=["16:9", "9:16"], resolutions=["720p", "1080p", "4k"], durations=list(range(4, 9)), max_references=0 if name.endswith("lite") else 2 if name.endswith("quality") else 3, recoverable=True)
-            elif "seedance" in name and (apimart or flag("is_volcengine_provider", p)):
-                cap.update(ratios=["16:9", "9:16", "1:1", "4:3", "3:4", "21:9", "adaptive"], resolutions=["480p", "720p", "1080p"], durations=list(range(4, 16)) if apimart else list(range(1, 61)), max_references=9, recoverable=True)
-            elif name in ("veo3", "veo3-fast", "veo2", "veo2-fast") and not any(flag(f, p) for f in ("is_yuli_provider", "is_tudou_provider", "is_lingjing_provider", "is_agnes_provider", "is_jimeng_provider", "is_runninghub_provider")):
+            elif "seedance" in name and apimart:
+                cap.update(ratios=["16:9", "9:16", "1:1", "4:3", "3:4", "21:9", "adaptive"], resolutions=["480p", "720p", "1080p"], durations=list(range(4, 16)), max_references=9, recoverable=True)
+            elif name in ("veo3", "veo3-fast", "veo2", "veo2-fast") and not any(flag(f, p) for f in ("is_yuli_provider", "is_tudou_provider", "is_lingjing_provider", "is_agnes_provider", "is_jimeng_provider")):
                 cap.update(ratios=["16:9", "9:16"], resolutions=["720p", "1080p"], durations=[4, 5, 6, 8], max_references=3, recoverable=True)
             else:
                 raise HTTPException(422, "该视频模型尚未建立 Agent 参数契约，请使用现有手动生成入口。")
@@ -141,11 +141,7 @@ def create_host(module, canvas_ops):
             elif "seedance" in name:
                 for key in ("generate_audio", "use_frame_roles", "trusted_asset"):
                     cap["settings"][key] = [False, True]
-                if flag("is_volcengine_provider", p):
-                    for key in ("watermark", "camerafixed", "multimodal"):
-                        cap["settings"][key] = [False, True]
-                else:
-                    cap["settings"]["return_last_frame"] = [False, True]
+                cap["settings"]["return_last_frame"] = [False, True]
             elif not apimart:
                 for key in ("watermark", "return_last_frame", "generate_audio", "camerafixed"):
                     cap["settings"][key] = [False, True]
@@ -318,8 +314,6 @@ def create_host(module, canvas_ops):
                     raise HTTPException(422, "首尾帧模式需要 1～2 张图片，不能混用视频或音频。")
             if flag("is_apimart_provider", p) and name == "minimax-h3" and settings.get("ratio") == "adaptive" and not refs and not deferred_references:
                 raise HTTPException(422, "MiniMax-H3 adaptive 比例需要参考素材，请明确选择固定比例。")
-            if flag("is_volcengine_provider", p) and "seedance" in name and not settings.get("use_frame_roles") and not settings.get("multimodal") and len([r for r in refs if r.get("kind", "image") == "image"]) > 1:
-                raise HTTPException(422, "此模式只使用第一张首帧；多图任务请明确启用全能参考或首尾帧。")
         return cap, settings
 
     def prepare_settings(step, references):

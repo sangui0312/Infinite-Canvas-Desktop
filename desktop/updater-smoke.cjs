@@ -18,6 +18,8 @@ async function run({win, root, waitFor}) {
   win.webContents.send('desktop:update-state', next);
   await waitFor(() => execute(`document.querySelector("#project-update-notes-version").textContent === ${JSON.stringify(nextVersion)}`), 'desktop release UI');
   assert.equal(await execute('document.querySelector("#project-update-notes-list img") === null && !window.__unsafeRelease'), true);
+  win.webContents.send('desktop:update-state', {...next,notes:`${nextVersion}\n- 模拟更新\n\n${currentVersion}\n- 历史版本`});
+  await waitFor(()=>execute('document.querySelectorAll("#project-update-notes-list .desktop-note-version").length === 2'),'version-grouped release notes');
   assert.equal(await execute('document.querySelector("#project-update-confirm-btn").disabled'), false);
   win.webContents.send('desktop:update-state', {...next,phase:'downloading',percent:42,total:1000000,transferred:420000});
   await waitFor(() => execute('document.querySelector("#desktop-update-progress").value === 42'), 'desktop progress');
