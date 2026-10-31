@@ -99,3 +99,62 @@ test('restoring default archives its previous backup instead of blocking or over
     b.uninstall(true); assert.equal(fs.existsSync(archived), true);
   } finally { f.cleanup(); }
 });
+const vm = require('node:vm');
+
+test('migration skips locked GPU caches before traversal but preserves browser settings and personal files', () => {
+  const f=fixture(); const copy=fs.copyFileSync, readDir=fs.readdirSync;
+  try {
+    const a=f.make();a.bootstrap();const source=a.root;
+    const keep=['userdata/data/canvas.json','userdata/assets/video.mp4','userdata/API/.env','browser-profile/Local Storage/leveldb/a','browser-profile/Session Storage/a','browser-profile/IndexedDB/a','browser-profile/Network/Cookies','browser-profile/Preferences'];
+    for(const name of keep)put(source,name);
+    for(const dir of ['GPUPersistentCache','DawnGraphiteCache','DawnWebGPUCache','GPUCache'])put(source,`browser-profile/${dir}/cache.db`,'cache');
+    const target=a.target(path.join(f.temp,'target'));a.schedule(target);
+    fs.copyFileSync=(from,...args)=>{if(String(from).includes('cache.db'))throw Object.assign(Error('locked cache'),{code:'EBUSY'});return copy(from,...args);};
+    fs.readdirSync=(dir,...args)=>{if(/GPUPersistentCache$/.test(String(dir)))throw Object.assign(Error('locked cache directory'),{code:'EBUSY'});return readDir(dir,...args);};
+    const b=f.make();b.bootstrap();assert.equal(b.root,target);assert.equal(b.migrationError,undefined);
+    for(const name of keep){assert.equal(fs.readFileSync(path.join(target,name),'utf8'),'personal');assert.equal(fs.readFileSync(path.join(source,name),'utf8'),'personal');}
+    assert.equal(fs.existsSync(path.join(target,'browser-profile/GPUPersistentCache')),false);
+  } finally {fs.copyFileSync=copy;fs.readdirSync=readDir;f.cleanup();}
+});
+
+test('locked persistent profile data aborts migration without switching paths or dropping personal files',()=>{
+  const f=fixture(),copy=fs.copyFileSync;
+  try {
+    const a=f.make();a.bootstrap();const source=a.root;put(source,'browser-profile/Network/Cookies');put(source,'userdata/assets/image.png');
+    const target=a.target(path.join(f.temp,'target'));a.schedule(target);
+    fs.copyFileSync=(from,...args)=>{if(path.basename(from)==='Cookies')throw Object.assign(Error('EBUSY persistent profile'),{code:'EBUSY'});return copy(from,...args);};
+    const b=f.make();b.bootstrap();assert.equal(b.root,source);assert.match(b.migrationError,/EBUSY/);assert.equal(readIni(b.configFile).pending,undefined);
+    assert.equal(fs.readFileSync(path.join(source,'browser-profile/Network/Cookies'),'utf8'),'personal');assert.equal(fs.existsSync(path.join(target,'owner.ini')),false);
+  } finally {fs.copyFileSync=copy;f.cleanup();}
+});
+
+test('startup prepares storage before selecting the personal profile and never migrates on port conflict',async()=>{
+  const source=fs.readFileSync(path.join(__dirname,'../desktop/main.cjs'),'utf8');
+  const begin=source.indexOf('  const storagePrepared = '),end=source.indexOf('  app.whenReady().then(async () => {',begin);
+  assert.ok(begin>0&&end>begin);
+  assert.match(source.slice(0,begin),/app\.setPath\('sessionData', path\.join\(runtimeRoot, 'lock-profile'\)\)/);
+  for(const conflict of [false,true]){
+    const events=[];let release;
+    const context={smokeMode:false,process:{env:{}},root:'old',boundsFile:'old/window.json',storageFailure:null,path,
+      storage:{root:'new',bootstrap(){events.push('copy-and-verify');}},
+      app:{setPath(name,value){events.push(name+':'+value);}},assertPortFree:()=>new Promise((resolve,reject)=>{release=()=>conflict?reject(Error('port occupied')):resolve();})};
+    const pending=vm.runInNewContext('(async()=>{'+source.slice(begin,end)+'return await storagePrepared;})()',context);
+    assert.deepEqual(events,[]);release();const error=await pending;
+    if(conflict){assert.match(error.message,/port occupied/);assert.deepEqual(events,[]);}
+    else{assert.equal(error,null);assert.equal(events[0],'copy-and-verify');assert.ok(events[1].startsWith('userData:'));assert.ok(events[2].startsWith('sessionData:'));}
+  }
+});
+
+test('storage relocation preserves media catalog, recovery records and quarantined files together',()=>{
+  const f=fixture();try{
+    const a=f.make();a.bootstrap();const source=a.root;
+    const records={'userdata/data/media_catalog.sqlite3':'catalog fixture','userdata/assets/.media-trash/operation/file.png':'recycled media','userdata/data/media-recovery.json':'operation fixture'};
+    for(const [name,value] of Object.entries(records))put(source,name,value);
+    const target=a.target(path.join(f.temp,'media-destination'));a.schedule(target);const b=f.make();b.bootstrap();
+    assert.equal(b.root,target);
+    for(const [name,value] of Object.entries(records)){
+      assert.equal(fs.readFileSync(path.join(target,name),'utf8'),value);
+      assert.equal(fs.readFileSync(path.join(source,name),'utf8'),value);
+    }
+  }finally{f.cleanup();}
+});

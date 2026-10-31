@@ -16,7 +16,8 @@ let root = storage.root;
 const runtimeRoot = storage.controlRoot;
 // Acquire one stable lock per installation before migrating or opening a profile.
 app.setPath('userData', path.join(runtimeRoot, 'lock-profile'));
-app.setPath('sessionData', path.join(root, 'browser-profile'));
+// Never open the source Chromium profile while a migration may still be pending.
+app.setPath('sessionData', path.join(runtimeRoot, 'lock-profile'));
 app.setAppUserModelId('site.sansheng.infinitecanvas.desktop');
 let win, backend, updates, fileUpdates, smokeRunning = false, quitting = false, closing = false, restarting = false, ready = false;
 const promptWindows = new Map();
@@ -250,14 +251,19 @@ else if (!app.requestSingleInstanceLock()) app.quit();
 else {
   app.on('second-instance', () => { if (win) { if (win.isMinimized()) win.restore(); win.show(); win.focus(); } });
   app.on('before-quit', event => { if (!quitting) { event.preventDefault(); void closeApp(); } });
-  app.whenReady().then(async () => {
+  // Start preparation before ready, retaining a separate temporary session path
+  // if Electron becomes ready while the exclusive-port probe is pending.
+  const storagePrepared = (async () => {
     if (smokeMode && !process.env.IC_DESKTOP_ROOT) throw new Error('Smoke mode requires an isolated IC_DESKTOP_ROOT.');
-    // No data copying while another desktop service (including older shells) runs.
     await assertPortFree();
     try { storage.bootstrap(); } catch (error) { storageFailure = error; }
     root = storage.root; boundsFile = path.join(root, 'window.json');
     app.setPath('userData', path.join(root, 'browser-profile'));
     app.setPath('sessionData', path.join(root, 'browser-profile'));
+  })().then(() => null, error => error);
+  app.whenReady().then(async () => {
+    const preparationError = await storagePrepared;
+    if (preparationError) throw preparationError;
     if (storageFailure) {
       const choice = await dialog.showMessageBox({ type: 'error', message: storageFailure.message, detail: '请检查原数据磁盘或目录权限。首次安装可选择其他位置存放个人资料。', buttons: storage.config.path ? ['退出'] : ['退出', '选择其他位置'], defaultId: 0 });
       if (choice.response === 1 && !storage.config.path) {

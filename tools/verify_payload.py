@@ -40,6 +40,8 @@ def main():
                 'static/css/smart-director.css', 'static/desktop-update-notes.json',
                 'legacy_import.py', 'desktop-app-version.json',
                 'static/js/desktop-storage.js', 'static/js/desktop-legacy-import.js',
+                'static/js/media-cleanup.js', 'static/css/media-cleanup.css',
+                'static/media-runtime/media_catalog.py', 'static/media-runtime/media_sources.py',
                 'static/agent-runtime/agent_canvas_ops.py', 'static/agent-runtime/canvas_agent_host.py',
                 'static/agent-runtime/canvas_agent/service.py', 'static/agent-runtime/canvas_agent/personas.py',
                 'static/agent-runtime/canvas_agent/planning.py', 'static/js/smart-agent.js',

@@ -69,6 +69,7 @@ class BackendTests(unittest.TestCase):
         (cls.app_dir / "VERSION").write_text("2026.10.08", encoding="utf-8")
         shutil.copy2(ROOT / "backend" / "main.py", cls.app_dir / "main.py")
         shutil.copytree(ROOT / "backend/static/agent-runtime", cls.app_dir / "static/agent-runtime", ignore=shutil.ignore_patterns("__pycache__"))
+        shutil.copytree(ROOT / "backend/static/media-runtime", cls.app_dir / "static/media-runtime", ignore=shutil.ignore_patterns("__pycache__"))
         cls.env = patch.dict(os.environ, {"IC_DESKTOP_DATA_DIR": str(cls.data_dir), "IC_DESKTOP_INSTANCE": "test-instance", "IC_DESKTOP_SHELL_VERSION": "0.1.0"})
         cls.env.start()
         spec = importlib.util.spec_from_file_location("isolated_desktop_backend", cls.app_dir / "main.py")
@@ -78,6 +79,8 @@ class BackendTests(unittest.TestCase):
 
     @classmethod
     def tearDownClass(cls):
+        if getattr(cls.module, "MEDIA_CATALOG", None):
+            cls.module.MEDIA_CATALOG.close()
         cls.env.stop()
         cls.temporary.cleanup()
 

@@ -27,12 +27,19 @@ function noLinks(root) {
   while (!fs.existsSync(current)) { const parent = path.dirname(current); if (parent === current) break; current = parent; }
   if (fs.existsSync(current) && (fs.lstatSync(current).isSymbolicLink() || canonical(fs.realpathSync(current)) !== canonical(current))) throw Error('数据路径不能使用链接或目录联接。');
 }
-function filesIn(root) {
+function migrationExcluded(name) {
+  const rel = name.replace(/\\/g, '/');
+  if (/^(?:owner\.ini$|runtime(?:\/|$))/i.test(rel)) return true;
+  // Only known disposable Chromium caches; never skip persistent session stores.
+  return /^browser-profile\/(?:Singleton[^/]*$|(?:Cache|Code Cache|GPUCache|GPUPersistentCache|ShaderCache|GrShaderCache|DawnCache|DawnGraphiteCache|DawnWebGPUCache|GraphiteDawnCache)(?:\/|$))/i.test(rel);
+}
+function filesIn(root, exclude = () => false) {
   noLinks(root);
   const files = [];
   function walk(dir, rel = '') {
     for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
       const name = path.join(rel, entry.name), full = path.join(root, name);
+      if (exclude(name)) continue;
       const stat = fs.lstatSync(full);
       if (stat.isSymbolicLink()) throw Error('数据目录包含链接，已停止操作，原数据保持不变。');
       if (stat.isDirectory()) walk(full, name);
@@ -113,7 +120,7 @@ class Storage {
       this.commit(this.completed(source, target, readIni(path.join(target, 'owner.ini')).archived)); return;
     }
     this.validateTarget(target);
-    const files = filesIn(source).filter(file => file.name !== 'owner.ini' && !/^runtime([\\/]|$)/i.test(file.name) && !/^browser-profile[\\/](Cache|Code Cache|GPUCache)([\\/]|$)/i.test(file.name) && !/^browser-profile[\\/]Singleton/i.test(file.name));
+    const files = filesIn(source, migrationExcluded);
     const required = files.reduce((sum, item) => sum + item.size, 0);
     const disk = fs.statfsSync(path.dirname(target));
     if (disk.bavail * disk.bsize < required + 32 * 1024 * 1024) throw Error('目标磁盘剩余空间不足，原资料保持不变。');

@@ -1505,6 +1505,7 @@ function refreshGeometryAfterLayout(){
     });
 }
 function scheduleSave(){
+    window.canvasMediaSession?.changed();
     if(!canvas || applyingRemoteCanvas) return;
     localCanvasDirty = true;
     setStatus('Saving...');
@@ -1569,6 +1570,9 @@ async function saveCanvas(){
     savingCanvasNow = true;
     saveCanvasAgain = false;
     try {
+        // Persistence remains available when protection synchronization is offline.
+        await window.canvasMediaSession?.sync().catch(() => {});
+        const mediaSaveRevision = window.canvasMediaSession?.revision;
         const res = await fetch(`/api/canvases/${canvas.id}`, {
             method:'PUT',
             headers:{'Content-Type':'application/json'},
@@ -1604,6 +1608,7 @@ async function saveCanvas(){
         canvas.updated_at = Number(canvas.updated_at || Date.now());
         lastCanvasUpdatedAt = canvas.updated_at;
         localCanvasDirty = Boolean(saveCanvasAgain);
+        if(!localCanvasDirty) window.canvasMediaSession?.markSaved(mediaSaveRevision);
         if(currentCanvasTime) currentCanvasTime.textContent = formatCanvasTime(canvas.updated_at);
         setStatus('Saved');
         loadCanvasList(false);
@@ -6618,6 +6623,7 @@ function canvasSyncNodeElementState(el, node){
 function canvasRenderOrderKeyOf(){ return nodes.map(n => n.id).join('|'); }
 
 function render(){
+    window.canvasMediaSession?.changed();
     const outputScrolls = captureOutputScrolls();
     const mediaStates = captureMediaPlaybackStates();
     applyViewport();
@@ -7692,8 +7698,8 @@ async function renameCanvasAssetItem(itemId){
 }
 async function deleteCanvasAssetItem(itemId){
     const item = currentCanvasAssetItem(itemId);
-    if(!item || !window.confirm(`删除资产「${item.name || 'asset'}」？`)) return;
-    const data = await fetch(`/api/asset-library/items/${encodeURIComponent(item.id)}`, {method:'DELETE'}).then(r => r.json());
+    if(!item || !window.confirm(`移除资产条目「${item.name || 'asset'}」？`)) return;
+    const data = await fetch(`/api/asset-library/items/${encodeURIComponent(item.id)}`, {method:'DELETE'}).then(window.DesktopMediaCleanup.removalResponse);
     canvasAssetLibrary = data.library || canvasAssetLibrary;
     managerSelectedAssetIds.delete(item.id);
     managerSelectedWorkflowIds.delete(item.id);
@@ -12425,7 +12431,7 @@ assetManagerModal?.addEventListener('click', async event => {
         const itemId = workflowRemove.dataset.managerWorkflowRemove || '';
         const item = (activeCanvasWorkflowCategory()?.items || []).find(entry => entry.id === itemId);
         if(!item || !window.confirm(`删除工作流「${item.name || 'workflow'}」？`)) return;
-        const data = await fetch(`/api/asset-library/items/${encodeURIComponent(item.id)}`, {method:'DELETE'}).then(r => r.json());
+        const data = await fetch(`/api/asset-library/items/${encodeURIComponent(item.id)}`, {method:'DELETE'}).then(window.DesktopMediaCleanup.removalResponse);
         canvasAssetLibrary = data.library || canvasAssetLibrary;
         managerSelectedWorkflowIds.delete(item.id);
         renderAssetManager(); renderCanvasAssetLibrary(); return;
@@ -12444,8 +12450,8 @@ assetManagerModal?.addEventListener('click', async event => {
     if(assetRemove){
         const itemId = assetRemove.dataset.managerAssetRemove || '';
         const item = (activeCanvasMediaCategory()?.items || []).find(entry => entry.id === itemId);
-        if(!item || !window.confirm(`删除资产「${item.name || 'asset'}」？`)) return;
-        const data = await fetch(`/api/asset-library/items/${encodeURIComponent(item.id)}`, {method:'DELETE'}).then(r => r.json());
+        if(!item || !window.confirm(`移除资产条目「${item.name || 'asset'}」？`)) return;
+        const data = await fetch(`/api/asset-library/items/${encodeURIComponent(item.id)}`, {method:'DELETE'}).then(window.DesktopMediaCleanup.removalResponse);
         canvasAssetLibrary = data.library || canvasAssetLibrary;
         managerSelectedAssetIds.delete(item.id);
         renderAssetManager(); renderCanvasAssetLibrary(); return;
@@ -12498,8 +12504,8 @@ assetManagerModal?.addEventListener('click', async event => {
     }
     if(event.target.closest?.('[data-manager-asset-lib-delete]')){
         const lib = activeCanvasAssetLibrary();
-        if(!lib || !window.confirm(`删除资产库「${lib.name || '资产库'}」？`)) return;
-        const data = await fetch(`/api/asset-library/libraries/${encodeURIComponent(lib.id)}`, {method:'DELETE'}).then(r => r.json());
+        if(!lib || !window.confirm(`移除资产库及其条目「${lib.name || '资产库'}」？`)) return;
+        const data = await fetch(`/api/asset-library/libraries/${encodeURIComponent(lib.id)}`, {method:'DELETE'}).then(window.DesktopMediaCleanup.removalResponse);
         canvasAssetLibrary = data.library || canvasAssetLibrary;
         activeCanvasAssetLibraryId = canvasAssetLibrary.active_library_id || canvasAssetLibraries()[0]?.id || '';
         activeCanvasAssetCategoryId = '';
@@ -12523,15 +12529,15 @@ assetManagerModal?.addEventListener('click', async event => {
     }
     if(event.target.closest?.('[data-manager-asset-cat-delete]')){
         const cat = activeCanvasMediaCategory();
-        if(!cat || !window.confirm(`删除分组「${cat.name || '分组'}」？`)) return;
-        const data = await fetch(`/api/asset-library/categories/${encodeURIComponent(cat.id)}`, {method:'DELETE'}).then(r => r.json());
+        if(!cat || !window.confirm(`移除分组及其条目「${cat.name || '分组'}」？`)) return;
+        const data = await fetch(`/api/asset-library/categories/${encodeURIComponent(cat.id)}`, {method:'DELETE'}).then(window.DesktopMediaCleanup.removalResponse);
         canvasAssetLibrary = data.library || canvasAssetLibrary;
         activeCanvasAssetCategoryId = canvasMediaCategories()[0]?.id || '';
         renderAssetManager(); renderCanvasAssetLibrary(); return;
     }
     if(event.target.closest?.('[data-manager-asset-delete]')){
         if(!managerSelectedAssetIds.size) return;
-        const data = await fetch('/api/asset-library/items/delete', {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({library_id:activeCanvasAssetLibraryId, ids:[...managerSelectedAssetIds]})}).then(r => r.json());
+        const data = await fetch('/api/asset-library/items/delete', {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({library_id:activeCanvasAssetLibraryId, ids:[...managerSelectedAssetIds]})}).then(window.DesktopMediaCleanup.removalResponse);
         canvasAssetLibrary = data.library || canvasAssetLibrary;
         managerSelectedAssetIds.clear();
         renderAssetManager(); renderCanvasAssetLibrary(); return;
@@ -12549,7 +12555,7 @@ assetManagerModal?.addEventListener('click', async event => {
     }
     if(event.target.closest?.('[data-manager-workflow-delete]')){
         if(!managerSelectedWorkflowIds.size) return;
-        const data = await fetch('/api/asset-library/items/delete', {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({library_id:activeCanvasAssetLibraryId, ids:[...managerSelectedWorkflowIds]})}).then(r => r.json());
+        const data = await fetch('/api/asset-library/items/delete', {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({library_id:activeCanvasAssetLibraryId, ids:[...managerSelectedWorkflowIds]})}).then(window.DesktopMediaCleanup.removalResponse);
         canvasAssetLibrary = data.library || canvasAssetLibrary;
         managerSelectedWorkflowIds.clear();
         renderAssetManager(); renderCanvasAssetLibrary(); return;
@@ -13009,15 +13015,29 @@ function pushUndo(){
     if(!canvas) return;
     undoStack.push({nodes:JSON.parse(JSON.stringify(serializableCanvasNodes())), connections:JSON.parse(JSON.stringify(connections))});
     if(undoStack.length > UNDO_MAX) undoStack.shift();
+    window.canvasMediaSession?.changed();
 }
-function performUndo(){
-    if(!canvas || !undoStack.length) return;
-    const state = undoStack.pop();
-    nodes = state.nodes;
-    connections = state.connections;
-    selected.clear();
-    render();
-    scheduleSave();
+let mediaUndoInFlight = false;
+async function performUndo(){
+    if(!canvas || !undoStack.length || mediaUndoInFlight) return;
+    const state = undoStack[undoStack.length - 1], originalCanvas = canvas.id;
+    const protection = window.canvasMediaSession;
+    const revision = protection?.revision;
+    mediaUndoInFlight = true;
+    try {
+        if(!protection) throw new Error('素材使用保护不可用，请重新打开画布后重试。');
+        await protection.ensure(state);
+        if(canvas?.id !== originalCanvas || undoStack[undoStack.length - 1] !== state || protection.revision !== revision){
+            setStatus('画布已变化，请重新执行撤销'); return;
+        }
+        undoStack.pop();
+        nodes = state.nodes;
+        connections = state.connections;
+        selected.clear();
+        render();
+        scheduleSave();
+    } catch(error) { setStatus(error.message || '素材恢复失败，当前画布已保留'); }
+    finally { mediaUndoInFlight = false; }
 }
 function cloneNode(n, dx, dy){
     const copy = JSON.parse(JSON.stringify(serializableCanvasNode(n)));
@@ -14413,6 +14433,8 @@ function hasOutputImageDrag(dataTransfer){ return [...(dataTransfer?.types || []
 function escapeHtml(str){ return String(str == null ? '' : str).replace(/[&<>"']/g, s => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[s])); }
 function escapeAttr(str){ return escapeHtml(str); }
 
+window.addEventListener('media-removal-result', event => setStatus(event.detail.message));
+window.canvasMediaSession = window.DesktopMediaCleanup?.bindCanvas(() => ({canvas,nodes,undo:undoStack,clipboard,cropState,currentOutputMeta,loopContext,cascadeContexts}));
 window.onload = async () => {
     applyTheme(localStorage.getItem('studio_theme') || localStorage.getItem(CANVAS_THEME_KEY) || 'light');
     applyQuickToolbarState();
@@ -14426,6 +14448,7 @@ window.onload = async () => {
     const openId = new URLSearchParams(window.location.search).get('id');
     if(openId){
         await openCanvas(openId);
+        if(!localCanvasDirty && !savingCanvasNow) window.canvasMediaSession?.markSaved();
     } else {
         window.location.replace(canvasListUrlForProject(rememberedCanvasListProject()));
     }

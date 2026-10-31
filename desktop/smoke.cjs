@@ -37,7 +37,7 @@ async function run({ win, session, root, saveScript, updates, backend }) {
     document.querySelector('#desktop-storage-settings').click();
     await new Promise(r=>setTimeout(r,100));
     const modal=document.querySelector('#desktop-storage-modal');
-    return {path:info.path,visible:modal.open,text:modal.querySelector('#desktop-storage-path').textContent,actions:[...modal.querySelectorAll('button')].map(b=>b.textContent)};
+    return {path:info.path,visible:modal.open,text:modal.querySelector('#desktop-storage-path').textContent,actions:[...modal.querySelectorAll('button[data-action]')].map(b=>b.textContent)};
   })()`);
   assert.equal(storage.path, root); assert.equal(storage.text, root); assert.equal(storage.visible, true);
   assert.deepEqual(storage.actions, ['打开文件夹','更改位置','恢复默认位置','关闭']);

@@ -189,15 +189,16 @@ function smartCascadeEdgeState(edgeKey){
 function smartCascadePathForCtx(ctx=null){
     return ctx?.runState?.runPath || ctx?.runPath || smartCascadeRunPath;
 }
-function capturePendingUndo(){ pendingUndoSnapshot = snapshotForUndo(); }
+function capturePendingUndo(){ pendingUndoSnapshot = snapshotForUndo(); window.canvasMediaSession?.changed(); }
 function commitPendingUndo(){
     if(pendingUndoSnapshot){
         undoStack.push(pendingUndoSnapshot);
         if(undoStack.length > UNDO_LIMIT) undoStack.shift();
         pendingUndoSnapshot = null;
+        window.canvasMediaSession?.changed();
     }
 }
-function discardPendingUndo(){ pendingUndoSnapshot = null; }
+function discardPendingUndo(){ pendingUndoSnapshot = null; window.canvasMediaSession?.changed(); }
 function snapshotForUndo(){
     return {
         nodes: JSON.parse(JSON.stringify(nodes)),
@@ -212,22 +213,33 @@ function pushUndo(){
     if(!canvas) return;
     undoStack.push(snapshotForUndo());
     if(undoStack.length > UNDO_LIMIT) undoStack.shift();
+    window.canvasMediaSession?.changed();
 }
-function performUndo(){
+let mediaUndoInFlight = false;
+async function performUndo(){
+    if(mediaUndoInFlight) return;
     if(!undoStack.length){ toast(tr('smart.toastNoUndo')); return; }
-    const snap = undoStack.pop();
-    undoSuppressed = true;
-    nodes = snap.nodes;
-    if(canvas) canvas.connections = snap.connections;
-    selectedId = snap.selectedId;
-    selectedIds = snap.selectedIds;
-    selectedImage = snap.selectedImage;
-    activeComposerSubject = null;
-    lastComposerNodeId = '';
-    render();
-    scheduleSave();
-    undoSuppressed = false;
-    toast(tr('smart.toastUndone'));
+    const snap = undoStack[undoStack.length - 1], originalCanvas = canvas;
+    const protection = window.canvasMediaSession, revision = protection?.revision;
+    mediaUndoInFlight = true;
+    try {
+        if(!protection) throw new Error('素材使用保护不可用，请重新打开画布后重试。');
+        await protection.ensure(snap);
+        if(canvas !== originalCanvas || undoStack[undoStack.length - 1] !== snap || protection.revision !== revision){ toast('画布已变化，请重新执行撤销'); return; }
+        undoStack.pop();
+        undoSuppressed = true;
+        nodes = snap.nodes;
+        if(canvas) canvas.connections = snap.connections;
+        selectedId = snap.selectedId;
+        selectedIds = snap.selectedIds;
+        selectedImage = snap.selectedImage;
+        activeComposerSubject = null;
+        lastComposerNodeId = '';
+        render();
+        scheduleSave();
+        toast(tr('smart.toastUndone'));
+    } catch(error) { toast(error.message || '素材恢复失败，当前画布已保留'); }
+    finally { undoSuppressed = false; mediaUndoInFlight = false; }
 }
 let comfyWorkflowCache = {};
 let cropState = null;
@@ -5376,7 +5388,8 @@ function bindAssetItemEvents(){
         btn.onclick = async e => {
             e.preventDefault(); e.stopPropagation();
             btn.disabled = true;
-            await deleteLocalAssetFromPanel(btn.dataset.deleteLocalAsset || '');
+            try { await deleteLocalAssetFromPanel(btn.dataset.deleteLocalAsset || ''); }
+            finally { btn.disabled = false; }
         };
     });
     assetGrid.querySelectorAll('[data-delete-asset]').forEach(btn => {
@@ -5384,7 +5397,7 @@ function bindAssetItemEvents(){
             e.preventDefault(); e.stopPropagation();
             btn.disabled = true;
             try {
-                const data = await fetch(`/api/asset-library/items/${encodeURIComponent(btn.dataset.deleteAsset)}`, {method:'DELETE'}).then(r => r.json());
+                const data = await fetch(`/api/asset-library/items/${encodeURIComponent(btn.dataset.deleteAsset)}`, {method:'DELETE'}).then(window.DesktopMediaCleanup.removalResponse);
                 setAssetLibraryFromResponse(data);
             } catch(err){
                 btn.disabled = false;
@@ -5409,7 +5422,7 @@ function bindWorkflowAssetItemEvents(){
             if(!item) return;
             btn.disabled = true;
             try {
-                const data = await fetch(`/api/asset-library/items/${encodeURIComponent(item.id)}`, {method:'DELETE'}).then(r => r.json());
+                const data = await fetch(`/api/asset-library/items/${encodeURIComponent(item.id)}`, {method:'DELETE'}).then(window.DesktopMediaCleanup.removalResponse);
                 setAssetLibraryFromResponse(data);
             } catch(err){
                 btn.disabled = false;
@@ -5479,6 +5492,7 @@ async function deleteLocalAssetFromPanel(itemId){
     const item = (activeAssetCategory()?.items || []).find(x => x.id === itemId)
         || (localAssetLibrary.items || []).find(x => x.id === itemId || x.file === itemId);
     if(!item) return;
+    if(!window.confirm(`将本地素材「${item.name || item.file || '素材'}」移入素材回收站？仍被使用的文件将保留。`)) return;
     try {
         const data = await fetch('/api/local-assets/delete', {
             method:'POST',
@@ -5491,7 +5505,7 @@ async function deleteLocalAssetFromPanel(itemId){
         const localData = await fetch('/api/local-assets').then(r => r.ok ? r.json() : {items:[], tree:null});
         setLocalAssetLibraryFromResponse(localData);
         renderAssetLibrary();
-        toast(data.deleted?.length ? '已删除本地素材' : '未找到要删除的本地素材');
+        toast(data.results?.length ? window.DesktopMediaCleanup.resultMessage(data) : data.deleted?.length ? '已移入素材回收站' : '没有可移入回收站的素材');
     } catch(err){
         toast(err.message || '删除失败');
     }
@@ -5570,6 +5584,7 @@ async function loadCanvas(){
     } catch(e) { toast(tr('smart.toastCanvasFail')); }
 }
 function scheduleSave(){
+    window.canvasMediaSession?.changed();
     clearTimeout(saveTimer);
     saveTimer = setTimeout(() => saveCanvas().catch(() => {}), 450);
 }
@@ -5581,6 +5596,9 @@ function saveCanvas(){
 }
 async function persistSmartCanvas(){
     if(!canvasId || !canvas) return;
+    // Saving durable references is still required if the cleanup service is unavailable.
+    await window.canvasMediaSession?.sync().catch(() => {});
+    const mediaSaveRevision = window.canvasMediaSession?.revision;
     savePromptDraftForCurrent();
     nodes.forEach(node => {
         node.images = (node.images || []).map(img => mediaItemForStorage(stripImageGenerationMeta(img)));
@@ -5612,6 +5630,7 @@ async function persistSmartCanvas(){
             smartAgentBaseCanvas = JSON.parse(JSON.stringify(data.canvas));
             canvas.agent_deleted_nodes = data.canvas.agent_deleted_nodes || {};
         }
+        window.canvasMediaSession?.markSaved(mediaSaveRevision);
         return canvas;
     } catch(error){
         toast(String(error.message || '画布保存失败').slice(0,160));
@@ -8398,6 +8417,7 @@ function rememberInlineVideoActivations(){
     });
 }
 function render(){
+    window.canvasMediaSession?.changed();
     if(smartWorkflowTransferModal?.classList.contains('open')) updateSmartWorkflowTransferMeta();
     rememberInlineVideoActivations();
     world.classList.toggle('smart-multi-selected', selectedNodeIds().length > 1);
@@ -19121,6 +19141,8 @@ document.getElementById('smartSplitMode')?.addEventListener('change', e => {
         value.value = Math.max(100, Number(value.value) || 1000);
     }
 });
+window.addEventListener('media-removal-result', event => toast(event.detail.message));
+window.canvasMediaSession = window.DesktopMediaCleanup?.bindCanvas(() => ({canvas,nodes,undo:undoStack,pending:pendingUndoSnapshot,settings,nodeClipboard,cropState,activeComposerSubject,loop:smartLoopContext,runs:smartCascadeRuns}));
 window.onload = async () => {
     applyTheme(localStorage.getItem('studio_theme') || localStorage.getItem('canvas_theme') || 'light');
     loadPromptPresets();
@@ -19135,6 +19157,7 @@ window.onload = async () => {
     await loadCanvas();
     syncApiKindToggleVisibility();
     render();
+    if(!saveTimer && !smartCanvasSavePromise) window.canvasMediaSession?.markSaved();
 };
 
 // Stable bridge: the Agent only reads context and asks the backend to mutate.

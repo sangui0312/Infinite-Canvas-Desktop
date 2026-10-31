@@ -1,4 +1,5 @@
 import json
+from pathlib import Path
 import uuid
 import base64
 import hashlib
@@ -198,6 +199,8 @@ GITHUB_REPO_URL = "https://github.com/sangui0312/Infinite-Canvas-Desktop"
 async def startup_event():
     global GLOBAL_LOOP
     GLOBAL_LOOP = asyncio.get_running_loop()
+    if globals().get("MEDIA_CATALOG"):
+        await asyncio.to_thread(_media_recover_entry_operations)
     # 不在启动时改写 static 页面文件：版本标记由响应中间件动态注入，磁盘文件
     # 必须与发布基线逐字节一致，桌面功能文件更新（文件包）才能通过基线校验。
     # PSD 导出依赖随桌面安装包分发。
@@ -997,8 +1000,23 @@ os.makedirs(CONVERSATION_DIR, exist_ok=True)
 os.makedirs(CANVAS_DIR, exist_ok=True)
 
 app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
-app.mount("/output", StaticFiles(directory=OUTPUT_DIR), name="output")
-app.mount("/assets", StaticFiles(directory=ASSETS_DIR), name="assets")
+class MediaAliasStaticFiles(StaticFiles):
+    def __init__(self, *args, media_prefix="", **kwargs):
+        super().__init__(*args, **kwargs)
+        self.media_prefix = media_prefix
+
+    async def get_response(self, path, scope):
+        if any(part.startswith(".") for part in path.replace("\\", "/").split("/")):
+            raise HTTPException(404, "文件不存在")
+        catalog = globals().get("MEDIA_CATALOG")
+        if catalog:
+            resolved = catalog.resolve_alias(self.media_prefix + path.replace("\\", "/"))
+            if resolved and os.path.isfile(resolved):
+                return FileResponse(resolved, media_type=content_type_for_path(resolved))
+        return await super().get_response(path, scope)
+
+app.mount("/output", MediaAliasStaticFiles(directory=OUTPUT_DIR, media_prefix="/output/"), name="output")
+app.mount("/assets", MediaAliasStaticFiles(directory=ASSETS_DIR, media_prefix="/assets/"), name="assets")
 
 # --- Pydantic 模型 ---
 
@@ -5946,6 +5964,14 @@ def storage_file_path(kind, rel):
     return path if os.path.exists(path) else None
 
 def output_file_from_url(url):
+    catalog = globals().get("MEDIA_CATALOG")
+    if catalog:
+        try:
+            alias_path = catalog.resolve_alias(url.get("url", "") if isinstance(url, dict) else url)
+            if alias_path and os.path.isfile(alias_path):
+                return alias_path
+        except (ValueError, OSError):
+            pass
     if isinstance(url, dict):
         url = url.get("url", "")
     if not url:
@@ -6049,7 +6075,7 @@ async def list_storage_files(kind: str = "generated", offset: int = 0, limit: in
 
 @app.get("/api/storage-files/{kind}/{rel_path:path}")
 async def get_storage_file(kind: str, rel_path: str):
-    path = storage_file_path(kind, rel_path)
+    path = output_file_from_url(f"/api/storage-files/{kind}/{urllib.parse.quote(rel_path, safe='/')}")
     if not path or not os.path.isfile(path):
         raise HTTPException(status_code=404, detail="文件不存在")
     return FileResponse(path, media_type=content_type_for_path(path))
@@ -6060,17 +6086,9 @@ async def delete_storage_files(payload: Dict[str, Any]):
     rels = [str(item or "").strip() for item in ((payload or {}).get("items") or []) if str(item or "").strip()]
     if not rels:
         raise HTTPException(status_code=400, detail="请选择要删除的文件")
-    removed = 0
-    for rel in rels:
-        path = storage_file_path(kind, rel)
-        if not path or not os.path.isfile(path):
-            continue
-        try:
-            os.remove(path)
-            removed += 1
-        except OSError:
-            pass
-    return {"removed": removed}
+    paths = [storage_file_path(kind, rel) for rel in rels[:200]]
+    results = _media_dispose_paths([path for path in paths if path], reason="storage-delete")
+    return {"removed": _media_success_count(results), "results": results}
 
 @app.get("/api/asset-classification-prompt")
 async def get_asset_classification_prompt():
@@ -6450,15 +6468,12 @@ def unique_asset_category_dir(library, base_name: str) -> str:
         i += 1
     return candidate
 
-def remove_asset_library_file(item) -> None:
-    """删除资产对应的本地文件（仅限 library 副本，删了不影响 /output 原图）。日志不影响主流程。"""
-    try:
-        url = item.get("url") if isinstance(item, dict) else ""
-        path = output_file_from_url(url)
-        if path and os.path.isfile(path):
-            os.remove(path)
-    except Exception as exc:
-        print(f"删除资产文件失败: {exc}")
+def remove_asset_library_file(item, journal=None):
+    """Dispose only an owned library copy, after its entry was saved as removed."""
+    path = output_file_from_url(item.get("url", "")) if isinstance(item, dict) else None
+    if not path or os.path.commonpath([os.path.abspath(ASSET_LIBRARY_DIR), os.path.abspath(path)]) != os.path.abspath(ASSET_LIBRARY_DIR):
+        return {"status": "retained", "reason": "not_library_copy"}
+    return _media_dispose_paths([path], reason="library-delete", related_entries=_media_library_related(item, journal))[0]
 
 def make_asset_library_item(src: str, name: str = "", subdir: str = "") -> Tuple[str, Dict[str, Any]]:
     kind = asset_library_media_kind(src)
@@ -6708,7 +6723,7 @@ def migrate_asset_library_into_dirs():
                 dst = os.path.join(ASSET_LIBRARY_DIR, cat_dir, fname)
                 try:
                     if not os.path.exists(dst):
-                        shutil.move(src, dst)
+                        _media_move_path(src, dst)
                     item["url"] = "/assets/library/" + urllib.parse.quote(f"{cat_dir}/{fname}", safe="/")
                     changed = True
                 except Exception as exc:
@@ -10396,8 +10411,8 @@ def migrate_double_extension_uploads():
             if os.path.exists(new_path):
                 continue
             try:
-                os.rename(old_path, new_path)
-            except OSError:
+                _media_move_path(old_path, new_path)
+            except (OSError, ValueError, HTTPException):
                 continue
             renamed += 1
             # caption/classification 旁车以「去掉一层扩展名」为基名，需同步改名以保留标注
@@ -10459,8 +10474,8 @@ def migrate_mislabeled_image_extensions():
             if os.path.exists(new_path):
                 continue
             try:
-                os.rename(path, new_path)
-            except OSError:
+                _media_move_path(path, new_path)
+            except (OSError, ValueError, HTTPException):
                 continue
             fixed += 1
             old_base = os.path.splitext(path)[0]
@@ -10611,7 +10626,10 @@ async def rename_local_asset_folder(payload: LocalAssetFolderRequest, request: R
     _, new_abs = _local_upload_safe_folder(new_rel)
     if os.path.exists(new_abs):
         raise HTTPException(status_code=400, detail="同名文件夹已存在")
-    os.rename(abs_path, new_abs)
+    catalog = _media_required()
+    if not hasattr(catalog, "move_directory"):
+        raise HTTPException(409, "素材目录暂不支持安全重命名")
+    catalog.move_directory(abs_path, new_abs)
     tree, items = _local_upload_tree_and_items()
     return {"ok": True, "folder": {"path": new_rel, "name": name}, "tree": tree, "items": items}
 
@@ -10634,15 +10652,7 @@ async def rename_local_asset_item(payload: LocalAssetRenameRequest, request: Req
     _, new_abs = _local_upload_abs(new_rel)
     if os.path.exists(new_abs):
         raise HTTPException(status_code=400, detail="同名素材已存在")
-    os.rename(abs_path, new_abs)
-    old_caption = _local_upload_caption_path(rel)
-    new_caption = _local_upload_caption_path(new_rel)
-    if os.path.isfile(old_caption) and not os.path.exists(new_caption):
-        os.rename(old_caption, new_caption)
-    old_classification = _local_upload_classification_path(rel)
-    new_classification = _local_upload_classification_path(new_rel)
-    if os.path.isfile(old_classification) and not os.path.exists(new_classification):
-        os.rename(old_classification, new_classification)
+    _media_move_path(abs_path, new_abs)
     tree, items = _local_upload_tree_and_items()
     return {"ok": True, "item": _local_upload_item(new_rel), "old_path": rel, "tree": tree, "items": items}
 
@@ -10652,25 +10662,17 @@ async def delete_local_assets(payload: dict, request: Request):
     names = payload.get("names") if isinstance(payload, dict) else None
     if not isinstance(names, list):
         names = []
-    deleted = []
-    for name in names:
+    paths, rels = [], []
+    for name in names[:200]:
         try:
             rel, path = _local_upload_safe_path(name)
         except HTTPException:
             continue
-        if os.path.isfile(path):
-            try:
-                os.remove(path)
-                txt_path = _local_upload_caption_path(rel)
-                if os.path.isfile(txt_path):
-                    os.remove(txt_path)
-                cls_path = _local_upload_classification_path(rel)
-                if os.path.isfile(cls_path):
-                    os.remove(cls_path)
-                deleted.append(rel)
-            except OSError:
-                pass
-    return {"deleted": deleted}
+        paths.append(path)
+        rels.append(rel)
+    results = _media_dispose_paths(paths, reason="local-delete")
+    deleted = [rel for rel, result in zip(rels, results) if _media_result_success(result)]
+    return {"deleted": deleted, "results": results}
 
 @app.post("/api/local-assets/move")
 async def move_local_assets(payload: dict, request: Request):
@@ -10703,14 +10705,7 @@ async def move_local_assets(payload: dict, request: Request):
             new_rel = f"{target_rel}/{base}".lstrip("/") if target_rel else base
             _, new_abs = _local_upload_abs(new_rel)
         try:
-            os.makedirs(os.path.dirname(new_abs), exist_ok=True)
-            os.rename(abs_path, new_abs)
-            for src_sib, dst_sib in (
-                (_local_upload_caption_path(rel), _local_upload_caption_path(new_rel)),
-                (_local_upload_classification_path(rel), _local_upload_classification_path(new_rel)),
-            ):
-                if os.path.isfile(src_sib) and not os.path.exists(dst_sib):
-                    os.rename(src_sib, dst_sib)
+            _media_move_path(abs_path, new_abs)
             moved += 1
         except OSError:
             continue
@@ -15312,11 +15307,15 @@ async def delete_asset_library(library_id: str):
         raise HTTPException(status_code=400, detail="至少保留一个资产库")
     if not any(item.get("id") == library_id for item in libraries):
         raise HTTPException(status_code=404, detail="资产库不存在")
+    removed_library = next(item for item in libraries if item.get("id") == library_id)
+    removed_items = [item for cat in removed_library.get("categories", []) for item in cat.get("items", [])]
     lib["libraries"] = [item for item in libraries if item.get("id") != library_id]
     if lib.get("active_library_id") == library_id:
         lib["active_library_id"] = lib["libraries"][0].get("id")
-    save_asset_library(lib)
-    return {"library": lib}
+    journal = _media_commit_library_removal(lib)
+    results = [remove_asset_library_file(item, journal) for item in removed_items]
+    _media_finish_library_removal(journal, results)
+    return {"library": lib, "results": results}
 
 @app.post("/api/asset-library/categories")
 async def create_asset_library_category(payload: AssetLibraryCategoryRequest):
@@ -15356,20 +15355,14 @@ async def delete_asset_library_category(category_id: str, library_id: str = ""):
         raise HTTPException(status_code=404, detail="分类不存在")
     if cat.get("type") == "workflow" and category_id == "workflows" and (library.get("id") or "") == "default":
         raise HTTPException(status_code=400, detail="默认工作流分类不能删除")
-    # 删除分组时一并清理该分组下的本地文件 + 分组文件夹，避免磁盘残留。
-    for item in (cat.get("items") or []):
-        remove_asset_library_file(item)
-    cat_dir = str(cat.get("dir") or "").strip("/").strip()
-    if cat_dir:
-        try:
-            target = os.path.join(ASSET_LIBRARY_DIR, cat_dir)
-            if os.path.isdir(target) and os.path.abspath(target).startswith(os.path.abspath(ASSET_LIBRARY_DIR) + os.sep):
-                shutil.rmtree(target, ignore_errors=True)
-        except Exception as exc:
-            print(f"删除分组文件夹失败: {exc}")
+    removed_items = list(cat.get("items") or [])
     library["categories"] = [c for c in library.get("categories", []) if c.get("id") != category_id]
-    save_asset_library(lib)
-    return {"library": lib}
+    journal = _media_commit_library_removal(lib)
+    results = [remove_asset_library_file(item, journal) for item in removed_items]
+    _media_finish_library_removal(journal, results)
+    # Never recursively remove a classification directory: it may contain
+    # referenced files, sidecars, unknown files or unindexed user additions.
+    return {"library": lib, "results": results}
 
 @app.post("/api/asset-library/items")
 async def add_asset_library_item(payload: AssetLibraryAddRequest):
@@ -15710,9 +15703,10 @@ async def delete_asset_library_item(item_id: str):
             cat["items"] = keep
     if not removed:
         raise HTTPException(status_code=404, detail="资产不存在")
-    remove_asset_library_file(removed)  # 同时删除本地文件，避免磁盘上堆积
-    save_asset_library(lib)
-    return {"library": lib}
+    journal = _media_commit_library_removal(lib)
+    result = remove_asset_library_file(removed, journal)
+    _media_finish_library_removal(journal, [result])
+    return {"library": lib, "results": [result]}
 
 @app.post("/api/asset-library/items/delete")
 async def batch_delete_asset_library_items(payload: AssetLibraryBatchDeleteRequest):
@@ -15734,10 +15728,10 @@ async def batch_delete_asset_library_items(payload: AssetLibraryBatchDeleteReque
                 else:
                     keep.append(item)
             cat["items"] = keep
-    for item in removed_items:  # 批量删除同时清理本地文件
-        remove_asset_library_file(item)
-    save_asset_library(lib)
-    return {"library": lib, "removed": removed}
+    journal = _media_commit_library_removal(lib)
+    results = [remove_asset_library_file(item, journal) for item in removed_items]
+    _media_finish_library_removal(journal, results)
+    return {"library": lib, "removed": removed, "results": results}
 
 @app.post("/api/asset-library/items/move")
 async def batch_move_asset_library_items(payload: AssetLibraryBatchMoveRequest):
@@ -16311,14 +16305,10 @@ async def delete_history(req: DeleteHistoryRequest):
                     json.dump(new_history, f, ensure_ascii=False, indent=4)
 
         if target_record:
-            for img_url in target_record.get("images", []):
-                file_path = output_file_from_url(img_url)
-                if file_path and os.path.exists(file_path):
-                    try:
-                        os.remove(file_path)
-                    except Exception as e:
-                        print(f"Failed to delete file {file_path}: {e}")
-            return {"success": True}
+            # History deletion removes this relation only. Other canvases, undo
+            # snapshots and chat records continue to own the same file.
+            _media_mark_dirty()
+            return {"success": True, "files_retained": True}
         else:
             return {"success": False, "message": "Record not found"}
     except Exception as e:
@@ -17165,6 +17155,671 @@ def run_workflow(name: str, payload: WorkflowRunRequest):
         client_id=payload.client_id or str(uuid.uuid4()),
     )
     return generate(req)
+
+# --- Desktop media lifecycle integration ---
+# File ownership and destructive transactions live in the updatable runtime.
+MEDIA_CATALOG = None
+MEDIA_RUNTIME_ERROR = None
+MEDIA_ACTIVE_REQUESTS = 0
+MEDIA_ACTIVITY_LOCK = RLock()
+MEDIA_AUTOMATIC_TASK = None
+MEDIA_AUTOMATIC_RUN = None
+MEDIA_SCAN_TASKS = {}
+MEDIA_SCAN_CANCEL = {}
+MEDIA_RESPONSE_LIMIT = 2 * 1024 * 1024
+
+
+def _media_gate():
+    if globals().get("MEDIA_ENTRY_RECOVERY_FAILED"):
+        return False, "entry_recovery_pending"
+    with MEDIA_ACTIVITY_LOCK:
+        if MEDIA_ACTIVE_REQUESTS:
+            return False, "active_read_or_write"
+    if QUEUE or any(str(item.get("status", "")).lower() in {"pending", "queued", "running", "processing", "in_progress", "submitted"} for item in list(CANVAS_TASKS.values())):
+        return False, "active_task"
+    importer = globals().get("DESKTOP_IMPORT_MANAGER")
+    if importer and getattr(importer, "active", 0):
+        return False, "active_import"
+    service = globals().get("CANVAS_AGENT_SERVICE")
+    if service and any(not task.done() for task in list(service.tasks.values())):
+        return False, "active_agent"
+    return True, ""
+
+
+def _media_required():
+    if not DESKTOP_MODE or MEDIA_CATALOG is None:
+        raise HTTPException(503, "素材安全目录不可用，已保留文件")
+    return MEDIA_CATALOG
+
+
+def _media_mark_dirty():
+    if MEDIA_CATALOG:
+        MEDIA_CATALOG.mark_dirty()
+
+
+def _media_result_success(result):
+    return isinstance(result, dict) and (result.get("status") in {"trashed", "completed", "moved", "success"} or result.get("ok") is True)
+
+
+def _media_success_count(results):
+    return sum(_media_result_success(result) for result in results)
+
+
+def _media_items(result):
+    if isinstance(result, list):
+        return result
+    return result.get("results", result.get("items", [])) if isinstance(result, dict) else []
+
+
+def _media_dispose_paths(paths, reason="manual", related_entries=None):
+    catalog = _media_required()
+    results = []
+    with catalog.coordinated():
+        registered = []
+        for path in paths:
+            try:
+                asset = catalog.register(path, source="legacy-delete")
+                registered.append(asset)
+            except Exception:
+                registered.append(None)
+        scan = catalog.scan()
+        assets = [asset for asset in registered if asset]
+        by_id = {}
+        if assets:
+            try:
+                outcome = catalog.move_to_trash([asset["id"] for asset in assets], uuid.uuid4().hex, scan_id=scan["id"], reason=reason, related_entries=related_entries)
+                by_id = {item.get("asset_id"): item for item in _media_items(outcome)}
+            except Exception:
+                by_id = {}
+        for asset in registered:
+            if not asset:
+                results.append({"status": "retained", "reason": "unmanaged_or_unknown"})
+            else:
+                results.append(by_id.get(asset["id"], {"asset_id": asset["id"], "status": "retained", "reason": "safety_check_failed"}))
+    return results
+
+
+def _media_move_path(source, destination):
+    catalog = _media_required()
+    with catalog.coordinated():
+        asset = catalog.register(source, source="local-move")
+        result = catalog.move_asset(asset["id"], destination)
+        if isinstance(result, dict) and result.get("error"):
+            raise HTTPException(409, "素材仍在使用或无法安全移动")
+        return result
+
+
+def _media_atomic_json(path, value):
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    temporary = path + "." + uuid.uuid4().hex + ".tmp"
+    try:
+        with open(temporary, "w", encoding="utf-8") as stream:
+            json.dump(value, stream, ensure_ascii=False)
+            stream.flush()
+            os.fsync(stream.fileno())
+        os.replace(temporary, path)
+    finally:
+        if os.path.exists(temporary):
+            os.remove(temporary)
+
+
+def _media_library_fingerprint(value):
+    data = dict(value)
+    data.pop("updated_at", None)
+    return hashlib.sha256(json.dumps(data, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode("utf-8")).hexdigest()
+
+
+def _media_commit_library_removal(after):
+    # Journal BEFORE removing any index relation. If a later operation fails,
+    # this manifest retains the exact previous index for conditional recovery.
+    _media_required()
+    with open(ASSET_LIBRARY_PATH, "r", encoding="utf-8") as stream:
+        before = json.load(stream)
+    operation = uuid.uuid4().hex
+    path = os.path.join(DATA_DIR, "media_entry_operations", operation + ".json")
+    _media_atomic_json(path, {"id": operation, "kind": "asset-library", "state": "prepared", "before": before, "after": after, "before_fingerprint": _media_library_fingerprint(before), "after_fingerprint": _media_library_fingerprint(after)})
+    after_ids={item.get("id") for library in after.get("libraries",[]) for category in library.get("categories",[]) for item in category.get("items",[])}
+    removed=[item for library in before.get("libraries",[]) for category in library.get("categories",[]) for item in category.get("items",[]) if item.get("id") not in after_ids]
+    groups={}
+    for item in removed:
+        asset=MEDIA_CATALOG.resolve(item.get("url",""))
+        if asset:
+            groups.setdefault(asset["id"],[]).append(item.get("url",""))
+    duplicates=[url for values in groups.values() if len(values)>1 for url in values]
+    if duplicates:
+        # One physical file cannot own two independent deletion snapshots.
+        # Retain it while creating separate metadata recycle entries instead.
+        MEDIA_CATALOG.acquire_lease("entry-group:"+operation,duplicates,kind="task")
+    save_asset_library(after)
+    _media_mark_dirty()
+    with open(path, encoding="utf-8") as stream:
+        journal = json.load(stream)
+    with open(ASSET_LIBRARY_PATH, "rb") as stream:
+        journal["after_sha256"] = hashlib.sha256(stream.read()).hexdigest()
+    journal["state"] = "entries_removed"
+    _media_atomic_json(path, journal)
+    return path
+
+
+def _media_finish_library_removal(path, results):
+    with open(path, encoding="utf-8") as stream:
+        journal = json.load(stream)
+    remaining = {item.get("id") for library in journal["after"].get("libraries", []) for cat in library.get("categories", []) for item in cat.get("items", [])}
+    snapshots = []
+    for library in journal["before"].get("libraries", []):
+        for cat in library.get("categories", []):
+            for item in cat.get("items", []):
+                if item.get("id") in remaining:
+                    continue
+                asset = MEDIA_CATALOG.resolve(item.get("url", ""))
+                if asset and asset.get("state") == "trash":
+                    continue
+                snapshots.append({"id": "entry:" + journal["id"] + ":" + str(len(snapshots)), "state": "trashed", "created": MEDIA_CATALOG.clock(),
+                                  "related": {"kind": "asset-library", "item": item, "library": {k:v for k,v in library.items() if k != "categories"}, "category": {k:v for k,v in cat.items() if k != "items"}}})
+    journal.update(state="completed", results=results, entry_trash=snapshots)
+    _media_atomic_json(path, journal)
+    MEDIA_CATALOG.release_lease("entry-group:"+journal["id"],kind="task")
+
+
+
+def _media_entry_trash_rows():
+    catalog = _media_required()
+    directory = Path(DATA_DIR) / "media_entry_operations"
+    rows = []
+    if not directory.exists():
+        return rows
+    for path in sorted(directory.glob("*.json")):
+        catalog._check_components(path)
+        with path.open(encoding="utf-8") as stream:
+            journal = json.load(stream)
+        for entry in journal.get("entry_trash", []):
+            if entry.get("state") in {"trashed", "restoring"}:
+                item = entry["related"]["item"]
+                rows.append({"id":entry["id"], "operation_id":entry["id"], "metadata_only":True,
+                             "name":item.get("name") or item.get("id"), "size":0,"original_path":item.get("url", ""),
+                             "reason":"仅移除资产条目，文件仍保留", "created":entry["created"],
+                             "expires":entry["created"] + catalog.settings()["trash_retention_days"] * 86400,"state":"trashed"})
+    return rows
+
+
+def _media_entry_trash_action(ids, restore=False, operation_id=None):
+    catalog = _media_required()
+    results=[]
+    with catalog.coordinated():
+        ledger="entry-action:"+hashlib.sha256(str(operation_id or uuid.uuid4().hex).encode()).hexdigest()
+        previous=catalog._request(ledger,"entry-restore" if restore else "entry-purge",ids)
+        if previous:
+            return previous["results"]
+        for key in ids:
+            if not re.fullmatch(r"entry:[a-f0-9]{32}:[0-9]+", key):
+                raise HTTPException(400,"无效的素材条目")
+            path=Path(DATA_DIR)/"media_entry_operations"/(key.split(":")[1]+".json")
+            catalog._check_components(path)
+            with path.open(encoding="utf-8") as stream:
+                journal=json.load(stream)
+            entry=next((x for x in journal.get("entry_trash",[]) if x["id"]==key),None)
+            if not entry:
+                raise HTTPException(404,"素材条目不存在")
+            target="restored" if restore else "purged"
+            if entry["state"]==target:
+                results.append({"id":key,"status":target});continue
+            if entry["state"] not in {"trashed","restoring"}:
+                results.append({"id":key,"status":"retained","code":"entry_unavailable"});continue
+            if restore:
+                entry["state"]="restoring"
+                _media_atomic_json(str(path),journal)
+                _media_merge_library_entries([entry["related"]])
+            entry["state"]=target
+            _media_atomic_json(str(path),journal)
+            catalog.mark_dirty()
+            results.append({"id":key,"status":target,"metadata_only":True})
+        catalog._finish(ledger,results)
+    return results
+
+
+def _media_expire_entry_trash():
+    catalog=_media_required()
+    settings=catalog.settings()
+    if not settings["enabled"] or catalog.clock()<settings["not_before"] or not _media_gate()[0]:
+        return
+    ids=[r["id"] for r in _media_entry_trash_rows() if catalog.clock()>=r["expires"]]
+    if ids:
+        _media_entry_trash_action(ids,restore=False)
+
+
+def _media_library_related(item, journal):
+    if not journal:
+        return None
+    with open(journal, encoding="utf-8") as stream:
+        before = json.load(stream)["before"]
+    for library in before.get("libraries", []):
+        for category in library.get("categories", []):
+            if any(entry.get("id") == item.get("id") for entry in category.get("items", [])):
+                return {"kind": "asset-library", "item": item,
+                        "library": {key: value for key, value in library.items() if key != "categories"},
+                        "category": {key: value for key, value in category.items() if key != "items"}}
+    return None
+
+
+def _media_merge_library_entries(entries):
+    lib = load_asset_library()
+    changed = False
+    for entry in entries:
+        if not isinstance(entry, dict) or entry.get("kind") != "asset-library":
+            continue
+        if any(item.get("id") == entry["item"].get("id") for library in lib.get("libraries", []) for category in library.get("categories", []) for item in category.get("items", [])):
+            continue
+        library = next((value for value in lib["libraries"] if value.get("id") == entry["library"].get("id")), None)
+        if library is None:
+            library = {**entry["library"], "categories": []}
+            lib["libraries"].append(library)
+        category = next((value for value in library["categories"] if value.get("id") == entry["category"].get("id")), None)
+        if category is None:
+            category = {**entry["category"], "items": []}
+            library["categories"].append(category)
+        category.setdefault("items", []).append(entry["item"])
+        changed = True
+    if changed:
+        save_asset_library(lib)
+
+
+def _media_restore_related(result):
+    entries = [item.get("related_entries") for item in _media_items(result) if item.get("status") == "restored"]
+    entries = [entry for entry in entries if isinstance(entry, dict) and entry.get("kind") == "asset-library"]
+    if not entries:
+        return result
+    catalog = _media_required()
+    path = os.path.join(DATA_DIR, "media_entry_operations", "restore-" + str(result["operation_id"]) + ".json")
+    # An interrupted metadata restoration is replayable; newer user entries are
+    # always preserved by ID, and successful file restore never gets hidden.
+    journal = {"kind": "restore-library", "state": "prepared", "entries": entries}
+    _media_atomic_json(path, journal)
+    try:
+        with catalog.coordinated():
+            _media_merge_library_entries(entries)
+            if hasattr(catalog, "ack_related_entries"):
+                catalog.ack_related_entries([item["id"] for item in _media_items(result) if item.get("status") == "restored"])
+            journal["state"] = "completed"
+            _media_atomic_json(path, journal)
+    except Exception:
+        for item in _media_items(result):
+            if item.get("status") == "restored" and item.get("related_entries"):
+                item.update(status="file_restored_entry_pending", code="entry_restore_pending")
+        result["success"] = sum(item.get("status") == "restored" for item in _media_items(result))
+        result["failed"] = len(_media_items(result)) - result["success"]
+    return result
+
+
+def _media_recover_entry_operations():
+    catalog = _media_required()
+    globals()["MEDIA_ENTRY_RECOVERY_FAILED"] = False
+    directory = os.path.join(DATA_DIR, "media_entry_operations")
+    if not os.path.isdir(directory):
+        return
+    with catalog.coordinated():
+        for name in sorted(os.listdir(directory)):
+            if not name.endswith(".json") or name.startswith("."):
+                continue
+            path = os.path.join(directory, name)
+            try:
+                with open(path, encoding="utf-8") as stream:
+                    journal = json.load(stream)
+                for entry in journal.get("entry_trash",[]):
+                    if entry.get("state")=="restoring":
+                        _media_merge_library_entries([entry["related"]])
+                        entry["state"]="restored"
+                        _media_atomic_json(path,journal)
+                if journal.get("state") in {"completed", "recovered"}:
+                    if journal.get("id"):
+                        catalog.release_lease("entry-group:"+journal["id"],kind="task")
+                    continue
+                if journal.get("kind") == "restore-library":
+                    _media_merge_library_entries(journal.get("entries", []))
+                elif journal.get("kind") == "asset-library":
+                    after_ids = {item.get("id") for library in journal["after"].get("libraries", []) for category in library.get("categories", []) for item in category.get("items", [])}
+                    entries = []
+                    for library in journal["before"].get("libraries", []):
+                        for category in library.get("categories", []):
+                            for item in category.get("items", []):
+                                if item.get("id") in after_ids:
+                                    continue
+                                asset = catalog.resolve(item.get("url", ""))
+                                # A completed filesystem transaction remains in
+                                # trash until its own restore operation is chosen.
+                                if asset and asset.get("state") != "active":
+                                    continue
+                                if not output_file_from_url(item.get("url", "")):
+                                    continue
+                                entries.append({"kind": "asset-library", "item": item,
+                                                "library": {key: value for key, value in library.items() if key != "categories"},
+                                                "category": {key: value for key, value in category.items() if key != "items"}})
+                    _media_merge_library_entries(entries)
+                journal["state"] = "recovered"
+                _media_atomic_json(path, journal)
+                if journal.get("id"):
+                    catalog.release_lease("entry-group:"+journal["id"],kind="task")
+            except Exception:
+                # A malformed journal cannot certify safe destructive activity.
+                globals()["MEDIA_ENTRY_RECOVERY_FAILED"] = True
+                logging.getLogger(__name__).warning("media_entry_recovery_pending")
+        if hasattr(catalog, "restored_related_entries"):
+            try:
+                pending = catalog.restored_related_entries()
+                _media_merge_library_entries([item.get("related_entries", item) for item in pending])
+                if hasattr(catalog, "ack_related_entries"):
+                    for offset in range(0, len(pending), 200):
+                        catalog.ack_related_entries([item["id"] for item in pending[offset:offset + 200]])
+            except Exception:
+                globals()["MEDIA_ENTRY_RECOVERY_FAILED"] = True
+
+
+def _media_register_values(value):
+    if not MEDIA_CATALOG:
+        return
+    if isinstance(value, dict):
+        for item in value.values():
+            _media_register_values(item)
+    elif isinstance(value, (list, tuple)):
+        for item in value:
+            _media_register_values(item)
+    elif isinstance(value, str) and value.startswith(("/assets/", "/output/", "/api/storage-files/")):
+        try:
+            path = output_file_from_url(value)
+            if path:
+                MEDIA_CATALOG.register(path, source="application")
+        except Exception:
+            # Invalidation prevents a failed registration being treated as a
+            # complete proof of absence by an earlier preview.
+            MEDIA_CATALOG.mark_dirty()
+
+
+class MediaActivityMiddleware:
+    """Hold the activity barrier until the entire ASGI response has been sent."""
+    def __init__(self, app):
+        self.app = app
+
+    async def __call__(self, scope, receive, send):
+        global MEDIA_ACTIVE_REQUESTS
+        path = scope.get("path", "")
+        safe_deletes = {"/api/storage-files/delete", "/api/local-assets/delete", "/api/history/delete", "/api/asset-library/items/delete"}
+        lifecycle = path.startswith(("/api/media-cleanup", "/api/media-trash", "/api/media-assets", "/api/media-sessions"))
+        legacy_delete = path in safe_deletes or (scope.get("method") == "DELETE" and path.startswith("/api/asset-library/"))
+        legacy_delete = legacy_delete or path == "/api/local-assets/move" or (scope.get("method") == "PATCH" and path in {"/api/local-assets/folders", "/api/local-assets/items"})
+        tracked = scope["type"] == "http" and not lifecycle and not legacy_delete and path != "/desktop/health"
+        mutation = scope.get("method") in {"POST", "PUT", "PATCH", "DELETE"}
+        body = bytearray()
+        status = 500
+        if tracked:
+            # Acquiring the SAME lock used by final deletion closes the race
+            # between the gate check and a new file read or reference mutation.
+            if MEDIA_CATALOG:
+                with MEDIA_CATALOG.coordinated():
+                    with MEDIA_ACTIVITY_LOCK:
+                        MEDIA_ACTIVE_REQUESTS += 1
+            else:
+                with MEDIA_ACTIVITY_LOCK:
+                    MEDIA_ACTIVE_REQUESTS += 1
+        async def observe(message):
+            nonlocal status
+            if message["type"] == "http.response.start":
+                status = message["status"]
+            if mutation and message["type"] == "http.response.body" and len(body) <= MEDIA_RESPONSE_LIMIT:
+                body.extend(message.get("body", b"")[:MEDIA_RESPONSE_LIMIT + 1 - len(body)])
+            await send(message)
+        try:
+            await self.app(scope, receive, observe)
+        finally:
+            if mutation and MEDIA_CATALOG and tracked:
+                try:
+                    if status < 400 and body and len(body) <= MEDIA_RESPONSE_LIMIT:
+                        _media_register_values(json.loads(body))
+                except (ValueError, UnicodeError):
+                    pass
+                finally:
+                    _media_mark_dirty()
+            if tracked:
+                with MEDIA_ACTIVITY_LOCK:
+                    MEDIA_ACTIVE_REQUESTS -= 1
+
+
+def _media_validate_request(request, payload=None):
+    ensure_same_origin_request(request)
+    _media_required()
+    if payload is not None:
+        operation = payload.get("operation_id")
+        if not isinstance(operation, str) or not re.fullmatch(r"[A-Za-z0-9_-]{8,128}", operation):
+            raise HTTPException(400, "需要有效的操作 ID")
+    return MEDIA_CATALOG
+
+
+def _media_ids(payload, field):
+    values = payload.get(field)
+    if not isinstance(values, list) or not values or len(values) > 200 or any(not isinstance(value, str) or not value or len(value) > 200 for value in values):
+        raise HTTPException(400, "请选择 1 到 200 个有效条目")
+    return list(dict.fromkeys(values))
+
+
+@app.get("/api/media-cleanup/settings")
+async def media_cleanup_settings():
+    return _media_required().settings()
+
+
+@app.put("/api/media-cleanup/settings")
+async def media_cleanup_save_settings(payload: Dict[str, Any], request: Request):
+    catalog = _media_validate_request(request, payload)
+    try:
+        return catalog.update_settings({key: value for key, value in payload.items() if key != "operation_id"})
+    except (ValueError, TypeError) as exc:
+        raise HTTPException(400, str(exc))
+
+
+@app.post("/api/media-cleanup/scans")
+async def media_cleanup_start_scan(payload: Dict[str, Any], request: Request):
+    catalog = _media_validate_request(request, payload)
+    # Reuse an active scan instead of launching unbounded background workers.
+    for scan_id, task in list(MEDIA_SCAN_TASKS.items()):
+        if not task.done():
+            return {"id": scan_id, "status": "running"}
+    operation = payload["operation_id"]
+    if operation in MEDIA_SCAN_TASKS:
+        return await media_cleanup_scan(operation)
+    from threading import Event
+    event = Event()
+    MEDIA_SCAN_CANCEL[operation] = event
+    MEDIA_SCAN_TASKS[operation] = asyncio.create_task(asyncio.to_thread(catalog.scan, cancel=event.is_set))
+    return {"id": operation, "status": "running"}
+
+
+@app.get("/api/media-cleanup/scans/{scan_id}")
+async def media_cleanup_scan(scan_id: str, offset: int = 0, limit: int = 100, filter: str = ""):
+    catalog = _media_required()
+    task = MEDIA_SCAN_TASKS.get(scan_id)
+    if task and not task.done():
+        return {"id": scan_id, "status": "running", "assets": []}
+    try:
+        result = dict(task.result() if task else catalog.get_scan(scan_id))
+    except Exception:
+        raise HTTPException(409, "素材扫描未完成或失败，未执行删除")
+    assets = result.get("assets", [])
+    if filter:
+        assets = [asset for asset in assets if asset.get("category") == filter or asset.get("status") == filter]
+    offset, limit = max(0, offset), max(1, min(200, limit))
+    result.update(status="completed", assets=assets[offset:offset + limit], total=len(assets), offset=offset, limit=limit)
+    return result
+
+
+@app.post("/api/media-cleanup/scans/{scan_id}/cancel")
+async def media_cleanup_cancel_scan(scan_id: str, payload: Dict[str, Any], request: Request):
+    _media_validate_request(request, payload)
+    event = MEDIA_SCAN_CANCEL.get(scan_id)
+    if event:
+        event.set()
+    return {"id": scan_id, "cancelled": True}
+
+
+@app.get("/api/media-assets/{asset_id}/references")
+async def media_asset_references(asset_id: str):
+    return _media_required().references(asset_id)
+
+
+@app.put("/api/media-assets/{asset_id}/keep")
+async def media_asset_keep(asset_id: str, payload: Dict[str, Any], request: Request):
+    catalog = _media_validate_request(request, payload)
+    if type(payload.get("keep")) is not bool:
+        raise HTTPException(400, "保留标记必须为布尔值")
+    return catalog.set_keep(asset_id, payload["keep"])
+
+
+@app.post("/api/media-cleanup/actions")
+async def media_cleanup_actions(payload: Dict[str, Any], request: Request):
+    catalog = _media_validate_request(request, payload)
+    ids = _media_ids(payload, "asset_ids")
+    scan_id = payload.get("scan_id")
+    task = MEDIA_SCAN_TASKS.get(scan_id)
+    if task and task.done():
+        scan_id = task.result()["id"]
+    if not isinstance(scan_id, str) or not scan_id:
+        raise HTTPException(400, "需要完整扫描的预览版本")
+    return await asyncio.to_thread(catalog.move_to_trash, ids, payload["operation_id"], scan_id=scan_id)
+
+
+@app.get("/api/media-trash")
+async def media_trash(offset: int = 0, limit: int = 100):
+    catalog=_media_required()
+    with catalog.coordinated():
+        physical=[]
+        while True:
+            page=catalog.list_trash(offset=len(physical),limit=200)
+            physical.extend(page["items"])
+            if not page["items"] or len(physical)>=page["total"]:
+                break
+        rows=sorted(physical+_media_entry_trash_rows(),key=lambda row:row.get("created",0),reverse=True)
+        start=max(0,offset);count=max(1,min(200,limit))
+        return {"items":rows[start:start+count],"total":len(rows)}
+
+
+@app.post("/api/media-trash/restore")
+async def media_trash_restore(payload: Dict[str, Any], request: Request):
+    catalog = _media_validate_request(request, payload)
+    ids=_media_ids(payload,"operation_ids")
+    physical=[key for key in ids if not key.startswith("entry:")]
+    result=await asyncio.to_thread(catalog.restore,physical,payload["operation_id"]) if physical else {"operation_id":payload["operation_id"],"results":[]}
+    result=_media_restore_related(result)
+    result["results"].extend(await asyncio.to_thread(_media_entry_trash_action,[key for key in ids if key.startswith("entry:")],True,payload["operation_id"]))
+    return result
+
+
+@app.post("/api/media-trash/purge")
+async def media_trash_purge(payload: Dict[str, Any], request: Request):
+    catalog = _media_validate_request(request, payload)
+    if payload.get("confirmed") is not True:
+        raise HTTPException(400, "永久删除不可恢复，需要再次确认")
+    ids=_media_ids(payload,"operation_ids")
+    physical=[key for key in ids if not key.startswith("entry:")]
+    result=await asyncio.to_thread(catalog.purge,physical,payload["operation_id"],confirmed=True) if physical else {"operation_id":payload["operation_id"],"results":[]}
+    result["results"].extend(await asyncio.to_thread(_media_entry_trash_action,[key for key in ids if key.startswith("entry:")],False,payload["operation_id"]))
+    return result
+
+
+@app.put("/api/media-sessions/{session_id}/references")
+async def media_session_references(session_id: str, payload: Dict[str, Any], request: Request):
+    catalog = _media_validate_request(request, payload)
+    references = payload.get("references")
+    version = payload.get("version")
+    if not isinstance(references, list) or len(references) > 20000 or any(not isinstance(value, str) or len(value) > 8192 for value in references) or type(version) is not int or version < 0 or len(session_id) > 200:
+        if 0 < len(session_id) <= 200 and hasattr(catalog, "mark_session_uncertain"):
+            catalog.mark_session_uncertain(session_id)
+        raise HTTPException(400, "会话引用集合无效")
+    try:
+        return catalog.sync_session(session_id, version, references, closed=payload.get("closed") is True)
+    except ValueError:
+        if hasattr(catalog, "mark_session_uncertain"):
+            catalog.mark_session_uncertain(session_id)
+        raise
+
+
+@app.post("/api/media-sessions/{session_id}/ensure")
+async def media_session_ensure(session_id: str, payload: Dict[str, Any], request: Request):
+    await media_session_references(session_id, payload, request)
+    catalog = _media_required()
+    if hasattr(catalog, "ensure_references"):
+        return await asyncio.to_thread(catalog.ensure_references, payload["references"])
+    missing = [value for value in payload["references"] if value.startswith(("/assets/", "/output/", "/api/storage-files/")) and not output_file_from_url(value)]
+    if missing:
+        raise HTTPException(409, "素材缺失，尚未恢复画布")
+    return {"ok": True, "missing": []}
+
+
+@app.on_event("startup")
+async def media_lifecycle_start():
+    global MEDIA_AUTOMATIC_TASK
+    if not MEDIA_CATALOG:
+        return
+    async def schedule():
+        global MEDIA_AUTOMATIC_RUN
+        await asyncio.sleep(300)
+        while True:
+            try:
+                MEDIA_AUTOMATIC_RUN = asyncio.create_task(asyncio.to_thread(MEDIA_CATALOG.run_automatic))
+                outcome=await asyncio.shield(MEDIA_AUTOMATIC_RUN)
+                if outcome.get("status")=="complete":
+                    await asyncio.to_thread(_media_expire_entry_trash)
+            except Exception:
+                logging.getLogger(__name__).warning("media_cleanup_cycle_failed")
+            await asyncio.sleep(3600)
+    MEDIA_AUTOMATIC_TASK = asyncio.create_task(schedule())
+
+
+@app.on_event("shutdown")
+async def media_lifecycle_stop():
+    for event in MEDIA_SCAN_CANCEL.values():
+        event.set()
+    if MEDIA_AUTOMATIC_TASK:
+        MEDIA_AUTOMATIC_TASK.cancel()
+        await asyncio.gather(MEDIA_AUTOMATIC_TASK, return_exceptions=True)
+    if MEDIA_AUTOMATIC_RUN:
+        await asyncio.gather(MEDIA_AUTOMATIC_RUN, return_exceptions=True)
+    tasks = list(MEDIA_SCAN_TASKS.values())
+    if tasks:
+        await asyncio.gather(*tasks, return_exceptions=True)
+    if MEDIA_CATALOG and hasattr(MEDIA_CATALOG, "close"):
+        MEDIA_CATALOG.close()
+
+
+MEDIA_RUNTIME_DIR = os.path.join(BASE_DIR, "static", "media-runtime")
+if DESKTOP_MODE:
+    if MEDIA_RUNTIME_DIR not in sys.path:
+        sys.path.insert(0, MEDIA_RUNTIME_DIR)
+    try:
+        from media_catalog import MediaCatalog, MediaError
+        @app.exception_handler(MediaError)
+        async def media_error_handler(request, exc):
+            return JSONResponse(status_code=409, content={"detail": "素材操作已停止，文件保持安全", "code": str(exc)})
+        MEDIA_CATALOG = MediaCatalog(USER_ROOT, local_origins=("http://127.0.0.1:31300", "http://localhost:31300"), safety_gate=_media_gate)
+    except Exception:
+        MEDIA_RUNTIME_ERROR = "media_catalog_unavailable"
+        logging.getLogger(__name__).warning(MEDIA_RUNTIME_ERROR)
+app.add_middleware(MediaActivityMiddleware)
+
+
+def _media_wrap_save(function):
+    @functools.wraps(function)
+    def save(*args, **kwargs):
+        if not MEDIA_CATALOG:
+            return function(*args, **kwargs)
+        with MEDIA_CATALOG.coordinated():
+            result = function(*args, **kwargs)
+            for value in args:
+                _media_register_values(value)
+            _media_register_values(result)
+            MEDIA_CATALOG.mark_dirty()
+            return result
+    return save
+
+
+for _media_save_name in ("save_to_history", "save_conversation", "save_canvas", "save_projects", "save_asset_library", "save_prompt_libraries", "make_asset_library_item", "import_local_image_file"):
+    globals()[_media_save_name] = _media_wrap_save(globals()[_media_save_name])
+
 
 # The independent desktop Agent shares the existing adapters and data root.
 # BASE_DIR is explicit for importlib-based launchers as well as the packaged app.
