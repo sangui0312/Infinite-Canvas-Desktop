@@ -772,6 +772,8 @@ function videoProviderProtocol(providerId){
     return String(provider?.protocol || '').trim().toLowerCase();
 }
 function videoResolutionOptions(providerId, model){
+    const profile = isApimartProviderId(providerId) && MiniMaxVideo.profile(model);
+    if(profile) return [['','Auto'], ...profile.resolutions.map(v=>[v,v.toUpperCase()])];
     return [['','Auto'],['480p','480P'],['720p','720P'],['768p','768P'],['1080p','1080P'],['2k','2K'],['4k','4K']];
 }
 function videoResolutionOptionsHtml(providerId, model){
@@ -2896,6 +2898,7 @@ function openImageNodeMenu(nodeId, clientX, clientY){
     const canPreview = node.url && !isMissingAssetUrl(node.url) && ['image','video'].includes(kind);
     const canEdit = node.url && !isMissingAssetUrl(node.url) && kind === 'image';
     imageNodeMenu.innerHTML = `
+        ${canvasH3Button(node)}
         ${canPreview ? `<button class="menu-btn" data-image-preview="${escapeAttr(nodeId)}"><i data-lucide="eye" class="w-4 h-4"></i><span>预览</span></button>` : ''}
         ${canEdit ? `<button class="menu-btn" data-image-edit="${escapeAttr(nodeId)}"><i data-lucide="pencil" class="w-4 h-4"></i><span>编辑</span></button>` : ''}
         <button class="menu-btn" data-image-replace="${escapeAttr(nodeId)}"><i data-lucide="image-plus" class="w-4 h-4"></i><span>替换</span></button>
@@ -9642,12 +9645,35 @@ function renderGeneratorBody(node){
     bindCascadeButtons(wrap, node.id);
     return wrap;
 }
+function canvasH3Items(){
+    return nodes.flatMap(node=>[...(node.images || []), ...(node.url ? [node] : [])]).filter(item=>item && typeof item==='object');
+}
+const canvasH3Upgrade = MiniMaxVideo.install({
+    items:canvasH3Items,
+    changed(){scheduleSave();render();},
+    notify:message=>showErrorModal(message, '升至 2K'),
+    completed(source,outputs){
+        const owner=nodes.find(node=>node===source || (node.images || []).includes(source));
+        if(!owner) return;
+        const fresh=outputs.filter(output=>!canvasH3Items().some(item=>item.url===output.url));
+        if(!fresh.length) return;
+        pushUndo();
+        if(owner.type==='output') owner.images.push(...fresh);
+        else fresh.forEach((item,index)=>nodes.push({...item,id:uid('img'),type:'image',mediaKind:'video',x:Number(owner.x || 0)+460+index*40,y:Number(owner.y || 0)}));
+        render();scheduleSave();
+    }
+});
+function canvasH3Button(item, overlay=false){
+    if(!MiniMaxVideo.canUpgrade(item)) return '';
+    return `<button type="button" class="menu-btn" data-h3-upgrade-url="${escapeAttr(item.url)}" title="${escapeAttr(item.h3_regeneration?.error || '使用原任务再生成 2K，额外计费，保留 768P')}" style="${overlay ? 'position:absolute;left:7px;bottom:7px;width:auto;max-width:calc(100% - 14px);height:26px;padding:0 9px;border:1px solid #cbd5e1;border-radius:8px;background:var(--panel,#fff);color:var(--text,#334155);white-space:nowrap;' : 'position:relative;'}z-index:6">${escapeHtml(MiniMaxVideo.label(item))}</button>`;
+}
 function isCanvasH3Video(node){
-    return isApimartProviderId(node.apiProvider) && String(node.model || '').trim().toLowerCase() === 'minimax-h3';
+    return isApimartProviderId(node.apiProvider) && Boolean(MiniMaxVideo.profile(node.model));
 }
 function copyH3VideoMetadata(source, target){
     if(source?.h3_request){
         target.h3_request = {...source.h3_request};
+        if(source.h3_regeneration) target.h3_regeneration = {...source.h3_regeneration};
         target.video_warning = String(source.video_warning || '');
         if(Number(source.width) > 0) target.width = Number(source.width);
         if(Number(source.height) > 0) target.height = Number(source.height);
@@ -9710,13 +9736,13 @@ function renderVideoBody(node){
             </div>
             <div class="gen-settings-row" style="flex-wrap:wrap">
                 <button type="button" class="setting-check ${node.enhancePrompt ? 'active' : ''}" data-video-toggle="enhancePrompt"><span class="check-dot"></span>${tr('canvas.videoEnhancePrompt')}</button>
-                <button type="button" class="setting-check ${node.enableUpsample ? 'active' : ''}" data-video-toggle="enableUpsample"><span class="check-dot"></span>${tr('canvas.videoUpsample')}</button>
+                ${!isCanvasH3Video(node) ? `<button type="button" class="setting-check ${node.enableUpsample ? 'active' : ''}" data-video-toggle="enableUpsample"><span class="check-dot"></span>${tr('canvas.videoUpsample')}</button>` : ''}
                 <button type="button" class="setting-check ${node.watermark ? 'active' : ''}" data-video-toggle="watermark"><span class="check-dot"></span>${tr('canvas.videoWatermark')}</button>
-                <button type="button" class="setting-check ${node.cameraFixed ? 'active' : ''}" data-video-toggle="cameraFixed"><span class="check-dot"></span>${tr('canvas.videoCameraFixed')}</button>
-                <button type="button" class="setting-check ${node.generateAudio ? 'active' : ''}" data-video-toggle="generateAudio"><span class="check-dot"></span>${tr('canvas.videoGenerateAudio')}</button>
+                ${!isCanvasH3Video(node) ? `<button type="button" class="setting-check ${node.cameraFixed ? 'active' : ''}" data-video-toggle="cameraFixed"><span class="check-dot"></span>${tr('canvas.videoCameraFixed')}</button>` : ''}
+                ${!isCanvasH3Video(node) ? `<button type="button" class="setting-check ${node.generateAudio ? 'active' : ''}" data-video-toggle="generateAudio"><span class="check-dot"></span>${tr('canvas.videoGenerateAudio')}</button>` : ''}
                 <button type="button" class="setting-check ${node.multimodal ? 'active' : ''}" data-video-toggle="multimodal"><span class="check-dot"></span>${tr('canvas.videoMultimodal')}</button>
                 <button type="button" class="setting-check ${node.useFrameRoles ? 'active' : ''}" data-video-toggle="useFrameRoles"><span class="check-dot"></span>${tr('canvas.videoFirstLastFrames')}</button>
-                <button type="button" class="setting-check ${node.returnLastFrame ? 'active' : ''}" data-video-toggle="returnLastFrame"><span class="check-dot"></span>${tr('canvas.videoReturnLastFrame')}</button>
+                ${!isCanvasH3Video(node) ? `<button type="button" class="setting-check ${node.returnLastFrame ? 'active' : ''}" data-video-toggle="returnLastFrame"><span class="check-dot"></span>${tr('canvas.videoReturnLastFrame')}</button>` : ''}
             </div>
         </div>
         <div class="gen-run-row">
@@ -9735,6 +9761,17 @@ function renderVideoBody(node){
     durationSelect.value = String(node.duration || 5);
     aspectSelect.value = node.aspectRatio || '16:9';
     const syncH3AspectControl = () => {
+        const profile=isCanvasH3Video(node) && MiniMaxVideo.profile(node.model);
+        if(profile?.model==='MiniMax-H3-Max' && node.resolution==='1080p') node.watermark=false;
+        durationSelect.min=profile ? profile.min : 1;
+        durationSelect.max=profile ? profile.max : 60;
+        aspectSelect.querySelector('option[value="9:21"]').disabled=Boolean(profile);
+        const watermarkButton=wrap.querySelector('[data-video-toggle="watermark"]');
+        if(watermarkButton){
+            watermarkButton.disabled=Boolean(profile?.model==='MiniMax-H3-Max' && node.resolution==='1080p');
+            watermarkButton.title=watermarkButton.disabled ? '1080P 不支持水印；提交时省略该参数' : '';
+            watermarkButton.classList.toggle('active',Boolean(node.watermark));
+        }
         const followsFrame = isCanvasH3Video(node) && node.useFrameRoles;
         aspectSelect.querySelector('[data-h3-frame-aspect]')?.remove();
         aspectSelect.disabled = Boolean(followsFrame);
@@ -9793,7 +9830,7 @@ function renderVideoBody(node){
     };
     durationSelect.onblur = e => { e.target.value = String(Math.max(1, Math.min(60, Number(node.duration || 5)))); };
     aspectSelect.onchange = e => { e.stopPropagation(); node.aspectRatio = e.target.value; scheduleSave(); };
-    resolutionSelect.onchange = e => { e.stopPropagation(); node.resolution = e.target.value; scheduleSave(); };
+    resolutionSelect.onchange = e => { e.stopPropagation(); node.resolution = e.target.value; if(node.model?.toLowerCase()==='minimax-h3-max' && node.resolution==='1080p') node.watermark=false; syncH3AspectControl(); scheduleSave(); };
     wrap.querySelectorAll('[data-video-toggle]').forEach(btn => {
         btn.onmousedown = e => e.stopPropagation();
         btn.onclick = e => {
@@ -10512,6 +10549,7 @@ async function runVideoNode(nodeId, opts={}){
     if(!opts.cascade){ node.running = true; refreshRunNodes(node, out); }
     else refreshRunNodes(node, out);
     try {
+        if(isCanvasH3Video(node)) MiniMaxVideo.validate(node.model,{duration,resolution:node.resolution,aspect_ratio:node.aspectRatio,watermark:node.watermark,use_frame_roles:node.useFrameRoles,multimodal:node.multimodal},{images:refs,videos:manualVideoUrlForNode(node) ? [manualVideoUrlForNode(node)] : videoRefs,audios:audioRefs});
         const result = await cascadeFetch('/api/canvas-video', {
             method:'POST',
             headers:{'Content-Type':'application/json'},
@@ -10528,7 +10566,7 @@ async function runVideoNode(nodeId, opts={}){
                     : videoRefs.map(ref => tempShUploadedUrlForNode(node, ref.url)),
                 audios:audioRefs.map(ref => ref.url).filter(Boolean),
                 enhance_prompt:Boolean(node.enhancePrompt),
-                enable_upsample:Boolean(node.enableUpsample),
+                enable_upsample:!isCanvasH3Video(node) && Boolean(node.enableUpsample),
                 watermark:Boolean(node.watermark),
                 camerafixed:Boolean(node.cameraFixed),
                 generate_audio:Boolean(node.generateAudio),
@@ -10545,7 +10583,7 @@ async function runVideoNode(nodeId, opts={}){
             const output = item && typeof item === 'object'
                 ? {...item, url, kind:item.kind || (isVideoUrl(url) ? 'video' : 'image')}
                 : {url, kind:isVideoUrl(url) ? 'video' : 'image'};
-            if(result.request_summary?.model === 'MiniMax-H3' && output.kind === 'video'){
+            if(MiniMaxVideo.profile(result.request_summary?.model) && output.kind === 'video'){
                 const meta = result.video_metadata?.[h3VideoIndex++] || {};
                 return {...output, width:meta.width, height:meta.height, video_warning:meta.warning || '', h3_request:{...result.request_summary}};
             }
@@ -10553,7 +10591,7 @@ async function runVideoNode(nodeId, opts={}){
         }).filter(item => item.url);
         if(!outputUrls.length) throw new Error(tr('canvas.videoFailed'));
         run.request = requestMetaFromResult(result);
-        if(result.request_summary?.model === 'MiniMax-H3') Object.assign(run.request, result.request_summary);
+        if(MiniMaxVideo.profile(result.request_summary?.model)) Object.assign(run.request, result.request_summary);
         run.warnings = result.warnings || [];
         node.videoWarning = run.warnings.join('；');
         appendOutputImages(out, outputUrls, refs[0], [{...meta, kind:'video'}]);
@@ -11959,7 +11997,7 @@ function renderOutputMedia(item, useGridLayout=false){
     }
     if(kind === 'video'){
         const warning = meta.video_warning ? `<span style="position:absolute;left:6px;bottom:6px;background:#fffbeb;color:#b45309;padding:3px 6px;border-radius:6px;font-size:11px" title="${escapeAttr(meta.video_warning)}">⚠ 比例不符</span>` : '';
-        return `<div class="output-img-wrap" data-output-url="${safe}"${gridStyle}>${canvasVideoPreviewHtml(url, useGridLayout ? 512 : 768, 'alt="video output" data-video-fallback-attrs="controls data-output-video-fallback=&quot;1&quot;"')}${timePill}${warning}<button class="canvas-video-play output-video-play" type="button" title="播放"><i data-lucide="play"></i></button><div class="output-video-badge"><i data-lucide="play" class="w-3 h-3"></i>VIDEO</div><button class="output-del" title="${tr('common.delete')}">×</button></div>`;
+        return `<div class="output-img-wrap" data-output-url="${safe}"${gridStyle}>${canvasVideoPreviewHtml(url, useGridLayout ? 512 : 768, 'alt="video output" data-video-fallback-attrs="controls data-output-video-fallback=&quot;1&quot;"')}${timePill}${warning}${canvasH3Button(meta,true)}<button class="canvas-video-play output-video-play" type="button" title="播放"><i data-lucide="play"></i></button><div class="output-video-badge"><i data-lucide="play" class="w-3 h-3"></i>VIDEO</div><button class="output-del" title="${tr('common.delete')}">×</button></div>`;
     }
     if(kind === 'audio'){
         return `<div class="output-img-wrap output-audio-wrap" data-output-url="${safe}"${gridStyle}><div class="output-audio-card"><i data-lucide="file-audio" class="w-7 h-7"></i><span>${escapeHtml(outputImageName(url))}</span><audio src="${safe}" data-url="${safe}" controls preload="metadata"></audio></div>${timePill}<button class="output-del" title="${tr('common.delete')}">×</button></div>`;

@@ -1966,7 +1966,7 @@ CANVAS_TASKS: Dict[str, Dict[str, Any]] = {}
 CANVAS_TASK_LOCK = Lock()
 
 class CanvasVideoRequest(BaseModel):
-    prompt: str = Field(min_length=1, max_length=VIDEO_PROMPT_MAX_LENGTH)
+    prompt: str = Field(min_length=1, max_length=max(7000, VIDEO_PROMPT_MAX_LENGTH))
     provider_id: str = "comfly"
     model: str = "veo3-fast"
     duration: int = 5
@@ -13375,7 +13375,7 @@ async def generate_tudou_grok_video(client, payload, provider, base_url, request
 
 
 def is_apimart_minimax_h3_generation(model):
-    return str(model or "").strip().lower() == "minimax-h3"
+    return str(model or "").strip().lower() in {"minimax-h3", "minimax-h3-max"}
 
 
 def minimax_h3_input_roles(payload):
@@ -13415,17 +13415,28 @@ def adapt_minimax_h3_body(body, payload):
         aspect = "adaptive" if has_refs else "16:9"
     elif aspect not in {"21:9", "16:9", "4:3", "1:1", "3:4", "9:16"}:
         raise HTTPException(status_code=400, detail="MiniMax-H3 不支持所选比例，请选择 21:9、16:9、4:3、1:1、3:4 或 9:16。")
-    resolution = str(payload.resolution or "2K").strip().upper()
+    is_max = str(payload.model).strip().lower() == "minimax-h3-max"
+    model = "MiniMax-H3-Max" if is_max else "MiniMax-H3"
+    resolution = str(payload.resolution or ("768P" if is_max else "2K")).strip().upper()
+    allowed = {"480P", "768P", "1080P"} if is_max else {"768P", "2K"}
     if payload.enable_upsample:
-        resolution = "768P"
-    if resolution not in {"768P", "2K"}:
-        raise HTTPException(status_code=400, detail="MiniMax-H3 分辨率只支持 768P 或 2K。")
-    if not 4 <= int(payload.duration) <= 15:
-        raise HTTPException(status_code=400, detail="MiniMax-H3 时长须为 4～15 秒，不会自动缩短所选时长。")
+        raise HTTPException(400, "请先生成 768P 成片，再使用结果上的“升至 2K”；H3-Max 不支持再生成。")
+    if resolution not in allowed:
+        raise HTTPException(400, f"{model} 分辨率仅支持 {'、'.join(sorted(allowed))}。")
+    minimum = 5 if is_max else 4
+    if not minimum <= int(payload.duration) <= 15:
+        raise HTTPException(400, f"{model} 时长须为 {minimum}～15 秒，不会自动缩短所选时长。")
+    if not str(payload.prompt).strip() or len(payload.prompt) > 7000:
+        raise HTTPException(400, f"{model} 提示词须为 1～7000 个字符。")
     adapted.pop("size", None)
     adapted.pop("ratio", None)
     adapted.pop("image_urls", None)
-    adapted.update(model="MiniMax-H3", aspect_ratio=aspect, resolution=resolution, duration=int(payload.duration))
+    adapted.update(model=model, aspect_ratio=aspect, resolution=resolution, duration=int(payload.duration))
+    if not (is_max and resolution == "1080P"):
+        adapted["watermark"] = bool(payload.watermark)
+    else:
+        adapted.pop("watermark", None)
+    adapted.pop("aigc_watermark", None)
     return adapted
 
 
@@ -13433,7 +13444,7 @@ def minimax_h3_request_summary(body, provider_id):
     roles = [item["role"] for item in body.get("image_with_roles", [])]
     frames = any(role in {"first_frame", "last_frame"} for role in roles)
     return {
-        "provider_id": provider_id, "model": "MiniMax-H3",
+        "provider_id": provider_id, "model": body["model"],
         "client_mode": "first_last_frame" if frames else "reference" if (roles or body.get("video_urls") or body.get("audio_urls")) else "text",
         "aspect_ratio": body["aspect_ratio"], "resolution": body["resolution"],
         "duration": body["duration"], "image_roles": roles,
@@ -13526,20 +13537,6 @@ async def minimax_h3_context_ir_enhance(
         raise HTTPException(status_code=502, detail=f"MiniMax-H3 Context-IR 任务完成但没有返回增强提示词：{result}")
     return enhanced
 
-async def minimax_h3_regenerate(client, provider, submit_url, source_task_id):
-    """MiniMax-H3 Regeneration：把本账号上一条成功的 MiniMax-H3 768P 任务再生成升 2K。
-    推荐用法只传 source_task_id，服务端自动回填 prompt/素材/源视频。
-    返回轮询完成后的原始响应（结果在 result.videos）。"""
-    body = {"model": "MiniMax-H3-Regeneration", "source_task_id": str(source_task_id or "")}
-    response = await post_with_overload_retry(client, submit_url, headers=api_headers(provider=provider), json=body)
-    response.raise_for_status()
-    raw = response.json()
-    task_id = extract_task_id(raw) or raw.get("task_id") or raw.get("id")
-    if not task_id:
-        raise HTTPException(status_code=502, detail=f"MiniMax-H3 Regeneration 提交后没有返回任务 ID：{raw}")
-    result = await wait_for_video_task(client, provider, task_id, submit_url)
-    return result, task_id
-
 @app.post('/api/canvas-video')
 async def canvas_video(payload: CanvasVideoRequest):
     provider = get_api_provider(payload.provider_id)
@@ -13559,6 +13556,8 @@ async def canvas_video(payload: CanvasVideoRequest):
     submit_url = submit_urls[0]
     requested_model = selected_model(payload.model, 'agnes-video-v2.0' if is_agnes else 'veo3-fast')
     is_h3_generation = is_apimart and is_apimart_minimax_h3_generation(requested_model)
+    if not is_h3_generation and len(payload.prompt) > VIDEO_PROMPT_MAX_LENGTH:
+        raise HTTPException(400, f'视频提示词最多 {VIDEO_PROMPT_MAX_LENGTH} 个字符。')
     h3_roles = minimax_h3_input_roles(payload) if is_h3_generation else []
     if is_h3_generation:
         adapt_minimax_h3_body({'image_with_roles': [{'role': role} for role in h3_roles], 'video_urls': payload.videos, 'audio_urls': payload.audios}, payload)
@@ -13669,6 +13668,8 @@ async def canvas_video(payload: CanvasVideoRequest):
                                     continue
                             reason = up_url[4:] if isinstance(up_url, str) and up_url.startswith('ERR:') else '未知错误'
                             invalid_images.append((ref.url, reason))
+                if is_h3_generation and invalid_images:
+                    raise HTTPException(400, f"参考图片上传失败，已停止提交，未忽略该图片：{invalid_images[0][1]}")
                 if payload.images and (not image_with_roles) and (not image_payload):
                     (first_url, first_reason) = invalid_images[0] if invalid_images else ('', '未知错误')
                     sample = invalid_video_image_preview(first_url)
@@ -13689,8 +13690,6 @@ async def canvas_video(payload: CanvasVideoRequest):
                         body['official_fallback'] = False
                 else:
                     body = {'prompt': payload.prompt, 'model': selected_model(payload.model, 'doubao-seedance-2.0'), 'duration': apimart_video_duration(payload.duration), 'size': apimart_video_size(payload.aspect_ratio or payload.size), 'resolution': payload.resolution or '480p'}
-                    if payload.enable_upsample and is_minimax_h3_model(requested_model):
-                        body['resolution'] = '768P'
                     if image_with_roles and video_payload and (not is_h3_generation):
                         raise HTTPException(status_code=400, detail='APIMart Seedance 的 image_with_roles 不能和 video_urls 同时使用，请只保留图片首尾帧或参考视频其中一种。')
                     if image_with_roles:
@@ -13727,9 +13726,9 @@ async def canvas_video(payload: CanvasVideoRequest):
                         body['prompt'] = apply_trusted_asset_prompt_index(body['prompt'], img_count, len(video_payload), len(audio_payload))
                     if payload.seed is not None:
                         body['seed'] = payload.seed
-                    if payload.return_last_frame:
+                    if payload.return_last_frame and not is_h3_generation:
                         body['return_last_frame'] = True
-                    if payload.generate_audio:
+                    if payload.generate_audio and not is_h3_generation:
                         body['generate_audio'] = True
             elif is_yuli:
                 yuli_images = []
@@ -13828,20 +13827,8 @@ async def canvas_video(payload: CanvasVideoRequest):
             urls = video_output_urls(result)
             if not urls:
                 raise HTTPException(status_code=502, detail=f'视频生成成功但没有返回视频：{result}')
-            regeneration_task_id = ''
-            regeneration_error = ''
-            if is_apimart and task_id and payload.enable_upsample and is_minimax_h3_model(requested_model):
-                try:
-                    (reg_result, reg_task_id) = await minimax_h3_regenerate(client, provider, submit_url, task_id)
-                    reg_urls = video_output_urls(reg_result)
-                    if reg_urls:
-                        urls = list(reg_urls) + list(urls)
-                        regeneration_task_id = reg_task_id or ''
-                    else:
-                        regeneration_error = f'MiniMax-H3 Regeneration 任务完成但没有返回视频：{reg_result}'
-                except Exception as exc:
-                    regeneration_error = f'MiniMax-H3 Regeneration 失败（已保留 768P 预览）：{exc}'
-                    print(regeneration_error)
+            if is_h3_generation:
+                MINIMAX_VIDEO_SERVICE.remember({**h3_summary, 'task_id': str(task_id or '')})
             video_phase = '下载'
             video_metadata = []
             local_urls = []
@@ -13856,10 +13843,6 @@ async def canvas_video(payload: CanvasVideoRequest):
                 response_payload.update(request_summary={**h3_summary, 'task_id': str(task_id or '')}, video_metadata=video_metadata)
                 response_payload['warnings'] = [item['warning'] for item in video_metadata if item['warning']]
                 print('[video:H3-result] ' + json.dumps({'task_id': str(task_id or ''), 'outputs': video_metadata}, ensure_ascii=False))
-            if regeneration_task_id:
-                response_payload['regeneration_task_id'] = regeneration_task_id
-            if regeneration_error:
-                response_payload['regeneration_error'] = regeneration_error
             if payload.return_last_frame:
                 last_frames = last_frame_image_urls(result)
                 if last_frames:
@@ -17831,6 +17814,8 @@ sys.dont_write_bytecode = True
 if AGENT_RUNTIME_DIR not in sys.path:
     sys.path.insert(0, AGENT_RUNTIME_DIR)
 from agent_canvas_ops import CanvasOperations
+from minimax_video import install_minimax_video
+MINIMAX_VIDEO_SERVICE = install_minimax_video(app, sys.modules[__name__])
 from canvas_agent_host import create_host as create_canvas_agent_host
 from canvas_agent import install_agent
 AGENT_CANVAS_OPS = CanvasOperations(canvas_path, CANVAS_LOCK)

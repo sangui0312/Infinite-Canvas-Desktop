@@ -124,7 +124,9 @@ def create_host(module, canvas_ops):
             else:
                 raise HTTPException(422, "该图片模型尚未建立 Agent 参数契约，请使用现有手动生成入口。")
         elif kind == "video":
-            if apimart and name == "minimax-h3":
+            if apimart and name == "minimax-h3-max":
+                cap.update(ratios=["21:9", "16:9", "4:3", "1:1", "3:4", "9:16", "adaptive"], resolutions=["480p", "768p", "1080p"], durations=list(range(5, 16)), max_references=9, recoverable=True)
+            elif apimart and name in ("minimax-h3", "minimax-h3-max"):
                 cap.update(ratios=["21:9", "16:9", "4:3", "1:1", "3:4", "9:16", "adaptive"], resolutions=["768p", "2k"], durations=list(range(4, 16)), max_references=9, recoverable=True)
             elif apimart and name in ("veo3.1-fast", "veo3.1-quality", "veo3.1-lite"):
                 cap.update(ratios=["16:9", "9:16"], resolutions=["720p", "1080p", "4k"], durations=list(range(4, 9)), max_references=0 if name.endswith("lite") else 2 if name.endswith("quality") else 3, recoverable=True)
@@ -135,8 +137,8 @@ def create_host(module, canvas_ops):
             else:
                 raise HTTPException(422, "该视频模型尚未建立 Agent 参数契约，请使用现有手动生成入口。")
             cap["settings"] = {k: [False] for k in ("watermark", "return_last_frame", "generate_audio", "multimodal", "use_frame_roles", "camerafixed", "trusted_asset")}
-            if apimart and name == "minimax-h3":
-                for key in ("return_last_frame", "generate_audio", "multimodal", "use_frame_roles", "trusted_asset"):
+            if apimart and name in ("minimax-h3", "minimax-h3-max"):
+                for key in ("watermark", "multimodal", "use_frame_roles", "trusted_asset"):
                     cap["settings"][key] = [False, True]
             elif "seedance" in name:
                 for key in ("generate_audio", "use_frame_roles", "trusted_asset"):
@@ -148,7 +150,7 @@ def create_host(module, canvas_ops):
             # H3 enhancement/upscale may introduce additional paid submissions. Keep
             # these outside a one-generation approval until separately budgeted.
             cap["settings"].update(enhance_prompt=[False], enable_upsample=[False])
-            cap["reference_kinds"] = ["image", "video", "audio"] if "seedance" in name or name == "minimax-h3" else ["image"]
+            cap["reference_kinds"] = ["image", "video", "audio"] if "seedance" in name or name in ("minimax-h3", "minimax-h3-max") else ["image"]
         else:
             raise HTTPException(422, "任务类型无效。")
         return cap
@@ -304,15 +306,25 @@ def create_host(module, canvas_ops):
             p = provider(spec["provider_id"], spec["model"], "video")
             name = str(spec["model"]).lower()
             refs = spec.get("references", [])
+            if name == "minimax-h3-max" and settings.get("resolution") == "1080p" and settings.get("watermark"):
+                raise HTTPException(422, "MiniMax-H3-Max 1080P 不支持水印。")
+            if name in ("minimax-h3", "minimax-h3-max"):
+                images = [r for r in refs if r.get("kind", "image") == "image"]
+                videos = [r for r in refs if r.get("kind") == "video"]
+                audios = [r for r in refs if r.get("kind") == "audio"]
+                if len(videos) > 3 or len(audios) > 3 or len(images) > 9:
+                    raise HTTPException(422, "MiniMax-H3 系列最多 9 张图片、3 段视频、3 段音频。")
+                if audios and not (images or videos or deferred_references):
+                    raise HTTPException(422, "参考音频须搭配图片或视频。")
             if settings.get("use_frame_roles"):
-                if flag("is_apimart_provider", p) and name == "minimax-h3" and settings.get("ratio") != "adaptive":
+                if flag("is_apimart_provider", p) and name in ("minimax-h3", "minimax-h3-max") and settings.get("ratio") != "adaptive":
                     raise HTTPException(422, "MiniMax-H3 首尾帧模式必须明确选择 adaptive 比例；固定比例不会被自动改写。")
                 if settings.get("multimodal"):
                     raise HTTPException(422, "首尾帧模式不能同时启用全能参考。")
                 images = [r for r in refs if r.get("kind", "image") == "image"]
                 if len(images) > 2 or any(r.get("kind", "image") != "image" for r in refs) or (not images and not deferred_references):
                     raise HTTPException(422, "首尾帧模式需要 1～2 张图片，不能混用视频或音频。")
-            if flag("is_apimart_provider", p) and name == "minimax-h3" and settings.get("ratio") == "adaptive" and not refs and not deferred_references:
+            if flag("is_apimart_provider", p) and name in ("minimax-h3", "minimax-h3-max") and settings.get("ratio") == "adaptive" and not refs and not deferred_references:
                 raise HTTPException(422, "MiniMax-H3 adaptive 比例需要参考素材，请明确选择固定比例。")
         return cap, settings
 
@@ -326,12 +338,20 @@ def create_host(module, canvas_ops):
         records = result.get("image_items") if kind == "image" else result.get("videos")
         records = (records or result.get("images", [])) if kind == "image" else (records or [])
         outputs = []
-        for record in records:
+        for index, record in enumerate(records):
             record = {"url": record} if isinstance(record, str) else record
             if not isinstance(record, dict) or not record.get("url"):
                 continue
             local_file(record["url"])
-            outputs.append({"url": record["url"], "kind": kind, **{k: record[k] for k in ("width", "height", "name") if k in record}})
+            output={"url": record["url"], "kind": kind, **{k: record[k] for k in ("width", "height", "name", "h3_request", "video_warning") if k in record}}
+            summary=result.get("request_summary") or {}
+            if kind=="video" and summary.get("model") in ("MiniMax-H3", "MiniMax-H3-Max"):
+                metadata=(result.get("video_metadata") or [])
+                meta=metadata[index] if index<len(metadata) else {}
+                output.update(h3_request=copy.deepcopy(summary),video_warning=meta.get("warning", ""))
+                for field in ("width", "height"):
+                    if meta.get(field): output[field]=meta[field]
+            outputs.append(output)
         if kind == "video":
             for record in result.get("images", []):
                 record = {"url": record} if isinstance(record, str) else record
@@ -418,8 +438,20 @@ def create_host(module, canvas_ops):
             found = m.video_output_urls(raw)
             if not found:
                 return {"status": "running"}
-            records = [await m.save_remote_video_to_output(url) for url in found]
-            return outputs_from_result({"videos": records, "task_id": task_id}, "video")
+            service=getattr(m, "MINIMAX_VIDEO_SERVICE", None)
+            summary=service.source(task["provider_id"],task_id) if service and str(task["model"]).lower() in ("minimax-h3", "minimax-h3-max") else None
+            records=[]
+            metadata=[]
+            for url in found:
+                if summary:
+                    probes=[]
+                    records.append(await m.save_remote_video_to_output(url,probe_results=probes))
+                    metadata.append(m.minimax_h3_video_metadata(probes[0] if probes else {},summary.get("aspect_ratio", "adaptive")))
+                else:
+                    records.append(await m.save_remote_video_to_output(url))
+            result={"videos":records,"task_id":task_id}
+            if summary: result.update(request_summary=summary,video_metadata=metadata)
+            return outputs_from_result(result, "video")
 
     async def broadcast(canvas_id):
         canvas = m.load_canvas(canvas_id)

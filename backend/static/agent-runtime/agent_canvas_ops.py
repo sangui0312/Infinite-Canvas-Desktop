@@ -149,7 +149,7 @@ class CanvasOperations:
                 url = item.get("url", "")
                 if not isinstance(url, str) or not url.startswith(("/assets/", "/output/", "/api/storage-files/")):
                     raise HTTPException(400, "交付成果必须是已保存的本地素材")
-                image = {key: item[key] for key in ("url", "kind", "width", "height", "name") if key in item}
+                image = {key: item[key] for key in ("url", "kind", "width", "height", "name", "h3_request", "video_warning") if key in item}
                 node_id = f"agent_{stable}_{index}"
                 if node_id in by_id:
                     raise HTTPException(409, "目标节点编号冲突")

@@ -112,6 +112,30 @@ class HostTests(unittest.IsolatedAsyncioTestCase):
             await self.host["generate"](self.spec(kind="video", model="minimax-h3", settings={"duration": 4, "enable_upsample": True}), self.observer)
         self.assertEqual(len(self.calls), 1)
 
+    async def test_max_contract_and_1080p_watermark_constraint(self):
+        self.provider['video_models'].append('minimax-h3-max')
+        cap=self.host['capabilities']('mock','minimax-h3-max','video')
+        self.assertEqual(cap['resolutions'],['480p','768p','1080p'])
+        self.assertEqual(cap['durations'],list(range(5,16)))
+        result=await self.host['generate'](self.spec(kind='video',model='minimax-h3-max',settings={'ratio':'9:16','resolution':'1080p','duration':15}),self.observer)
+        self.assertEqual(result['outputs'][0]['kind'],'video')
+        for settings in ({'duration':4},{'resolution':'2k','duration':5},{'resolution':'1080p','duration':5,'watermark':True},{'duration':5,'enable_upsample':True}):
+            with self.assertRaises(HTTPException):
+                await self.host['generate'](self.spec(kind='video',model='minimax-h3-max',settings=settings),self.observer)
+        self.assertEqual(len(self.calls),1)
+
+    async def test_h3_video_delivery_keeps_upgrade_source_and_actual_dimensions(self):
+        async def video(payload):
+            return {'videos':['/output/video.mp4'],'task_id':'source',
+                    'request_summary':{'provider_id':'mock','task_id':'source','model':'MiniMax-H3','resolution':'768P'},
+                    'video_metadata':[{'width':768,'height':1344,'warning':'fixture aspect warning'}]}
+        self.module.canvas_video=video
+        result=await self.host['generate'](self.spec(kind='video',model='minimax-h3',settings={'ratio':'9:16','resolution':'768p','duration':4}),self.observer)
+        output=result['outputs'][0]
+        self.assertEqual(output['h3_request']['task_id'],'source')
+        self.assertEqual((output['width'],output['height']),(768,1344))
+        self.assertEqual(output['video_warning'],'fixture aspect warning')
+
     async def test_queries_are_readonly_and_recover_local_outputs(self):
         image = await self.host["query_task"]({"provider_id": "mock", "model": "gpt-image-2.5-ext", "kind": "image", "upstream_id": "known"})
         self.assertEqual(image["outputs"][0]["url"], "/output/image.png")

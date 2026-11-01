@@ -471,7 +471,7 @@ class AgentService:
             for index, item in enumerate(result["outputs"]):
                 if not isinstance(item, dict) or not isinstance(item.get("url"), str) or not item["url"]:
                     continue
-                outputs.append({"id": step["task_id"] + f"-{index}", "url": item["url"], "kind": item.get("kind", step["kind"]), **{k: item[k] for k in ("width", "height", "name") if k in item}})
+                outputs.append({"id": step["task_id"] + f"-{index}", "url": item["url"], "kind": item.get("kind", step["kind"]), **{k: item[k] for k in ("width", "height", "name", "h3_request", "video_warning") if k in item}})
             if not outputs:
                 step["status"], step["error"] = "unknown", "未取得可用成果，禁止自动重发。"
             else:

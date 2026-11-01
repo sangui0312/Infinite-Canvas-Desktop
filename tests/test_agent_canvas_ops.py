@@ -36,6 +36,14 @@ class CanvasOpsTests(unittest.TestCase):
         changed = self.output(); changed['title']='different'
         with self.assertRaises(HTTPException): self.ops.apply('c','op1',changed)
 
+    def test_video_delivery_retains_regeneration_source_on_canvas(self):
+        operation=self.output()
+        operation['outputs']=[{'url':'/output/video.mp4','kind':'video','width':768,'height':1344,
+                              'h3_request':{'model':'MiniMax-H3','resolution':'768P','task_id':'source'},'video_warning':''}]
+        result=self.ops.apply('c','video-delivery',operation)
+        output=next(n for n in result['canvas']['nodes'] if n['id'] in result['node_ids'])['images'][0]
+        self.assertEqual(output['h3_request']['task_id'],'source')
+
     def test_compare_and_write_rejects_stale_snapshot(self):
         old = self.ops.read('c')
         self.ops.apply('c','op1',self.output())
