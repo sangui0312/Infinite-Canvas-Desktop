@@ -1012,8 +1012,11 @@ class MediaAliasStaticFiles(StaticFiles):
         if catalog:
             resolved = catalog.resolve_alias(self.media_prefix + path.replace("\\", "/"))
             if resolved and os.path.isfile(resolved):
-                return FileResponse(resolved, media_type=content_type_for_path(resolved))
-        return await super().get_response(path, scope)
+                return safe_media_response(resolved, media_type=content_type_for_path(resolved))
+        response = await super().get_response(path, scope)
+        if str(path).lower().endswith('.svg') and isinstance(response, FileResponse):
+            return safe_media_response(response.path)
+        return response
 
 app.mount("/output", MediaAliasStaticFiles(directory=OUTPUT_DIR, media_prefix="/output/"), name="output")
 app.mount("/assets", MediaAliasStaticFiles(directory=ASSETS_DIR, media_prefix="/assets/"), name="assets")
@@ -1926,6 +1929,8 @@ class OnlineImageRequest(BaseModel):
     output_compression: Optional[int] = None
     background: str = ""
     version: str = "flare"
+    complexity: str = ""
+    svg: Optional[Dict[str, Any]] = None
     n: int = 1
     reference_images: List[AIReference] = []
     operation: str = ""
@@ -2033,6 +2038,10 @@ class ApiProviderPayload(BaseModel):
     clear_key: bool = False
 
 class ChatRequest(BaseModel):
+    version: str = "flare"
+    output_format: str = ""
+    complexity: str = ""
+    svg: Optional[Dict[str, Any]] = None
     conversation_id: str = ""
     message: str = Field(min_length=1, max_length=LLM_MESSAGE_MAX_LENGTH)
     system_prompt: str = ""
@@ -4312,7 +4321,7 @@ def codex_postprocess_image_to_requested_size(path="", requested_size="", provid
     if not width or not height or not path or not os.path.isfile(path):
         return ""
     try:
-        with Image.open(path) as img:
+        with open_media_image(path) as img:
             img.load()
             if img.width == width and img.height == height:
                 return ""
@@ -6006,7 +6015,7 @@ def image_has_alpha(img: Image.Image) -> bool:
         return "transparency" in img.info
     return False
 
-STORAGE_IMAGE_EXTS = {".png", ".jpg", ".jpeg", ".webp", ".gif", ".bmp", ".avif"}
+STORAGE_IMAGE_EXTS = {".svg", ".png", ".jpg", ".jpeg", ".webp", ".gif", ".bmp", ".avif"}
 
 def storage_file_item(kind, root, path):
     rel = os.path.relpath(path, root).replace("\\", "/")
@@ -6025,7 +6034,7 @@ def storage_file_item(kind, root, path):
         "created_at": stat.st_mtime,
     }
     try:
-        with Image.open(path) as img:
+        with open_media_image(path) as img:
             item["width"], item["height"] = img.size
     except Exception:
         pass
@@ -6078,7 +6087,7 @@ async def get_storage_file(kind: str, rel_path: str):
     path = output_file_from_url(f"/api/storage-files/{kind}/{urllib.parse.quote(rel_path, safe='/')}")
     if not path or not os.path.isfile(path):
         raise HTTPException(status_code=404, detail="文件不存在")
-    return FileResponse(path, media_type=content_type_for_path(path))
+    return safe_media_response(path, media_type=content_type_for_path(path))
 
 @app.post("/api/storage-files/delete")
 async def delete_storage_files(payload: Dict[str, Any]):
@@ -6165,7 +6174,7 @@ async def media_preview(url: str, w: int = 512):
         if is_video_preview_file(path):
             img = generate_video_preview_image(path, width)
         else:
-            with Image.open(path) as source:
+            with open_media_image(path) as source:
                 img = ImageOps.exif_transpose(source)
                 img.thumbnail((width, width), Image.LANCZOS)
                 img = img.convert("RGBA" if image_has_alpha(img) else "RGB")
@@ -6198,7 +6207,7 @@ async def image_jpeg(url: str, w: int = 0):
 
     def _build():
         os.makedirs(MEDIA_PREVIEW_DIR, exist_ok=True)
-        with Image.open(path) as src:
+        with open_media_image(path) as src:
             img = ImageOps.exif_transpose(src)
             if width:
                 img.thumbnail((width, width), Image.LANCZOS)
@@ -6315,7 +6324,7 @@ def import_local_image_file(path):
     if size > LOCAL_IMAGE_IMPORT_MAX_BYTES:
         raise HTTPException(status_code=413, detail="本地图片过大，请使用 50MB 以内的图片")
     try:
-        with Image.open(path) as img:
+        with open_media_image(path) as img:
             img.verify()
     except Exception:
         raise HTTPException(status_code=400, detail="文件不是可识别的图片")
@@ -6895,7 +6904,7 @@ def shared_child_abs(folder_abs, rel):
 def image_path_to_data_url(path, max_size=1024):
     if max_size:
         try:
-            with Image.open(path) as img:
+            with open_media_image(path) as img:
                 img.load()
                 if max(img.size) > max_size:
                     img.thumbnail((max_size, max_size), Image.LANCZOS)
@@ -7269,7 +7278,7 @@ def convert_output_to_jpg(url, quality=88):
         return url
     jpg_path = f"{root}.jpg"
     try:
-        with Image.open(path) as img:
+        with open_media_image(path) as img:
             if img.mode in ("RGBA", "LA") or (img.mode == "P" and "transparency" in img.info):
                 bg = Image.new("RGB", img.size, (255, 255, 255))
                 bg.paste(img.convert("RGBA"), mask=img.convert("RGBA").split()[-1])
@@ -7295,7 +7304,7 @@ def reference_to_data_url(ref, max_size=None):
         return ref.get("url", "")
     if max_size:
         try:
-            with Image.open(path) as img:
+            with open_media_image(path) as img:
                 img.load()
                 w, h = img.size
                 if max(w, h) > max_size:
@@ -7324,7 +7333,7 @@ def is_image_reference(ref):
         return kind == "image"
     if mime:
         return mime.startswith("image/")
-    return bool(re.search(r"\.(png|jpe?g|webp|gif|bmp|tiff?)(\?|#|$)", url))
+    return bool(re.search(r"\.(png|jpe?g|webp|gif|svg|bmp|tiff?)(\?|#|$)", url))
 
 def image_references(refs):
     return [ref for ref in (refs or []) if is_image_reference(ref)]
@@ -8659,42 +8668,66 @@ async def upload_local_video_to_cloud(ref_url: str, service: str = "auto", allow
 async def upload_local_video_to_temp_sh(ref_url: str) -> Dict[str, str]:
     return await upload_local_video_to_cloud(ref_url, "auto")
 
-async def save_ai_image_to_output(image_data, prefix='online_', category='output'):
-    filename = f'{prefix}{uuid.uuid4().hex[:10]}.png'
-    path = output_path_for(filename, category)
-    if image_data['type'] == 'b64':
-        mime_type = str(image_data.get('mime_type') or '').lower()
-        if 'jpeg' in mime_type or 'jpg' in mime_type:
-            filename = filename[:-4] + '.jpg'
-            path = output_path_for(filename, category)
-        elif 'webp' in mime_type:
-            filename = filename[:-4] + '.webp'
-            path = output_path_for(filename, category)
-        with open(path, 'wb') as f:
-            f.write(base64.b64decode(image_data['value']))
-        return output_url_for(filename, category)
-    value = image_data['value']
-    if value.startswith('/output/') or value.startswith('/assets/'):
+async def save_ai_image_to_output(image_data, prefix='online_', category='output', strict=False):
+    value = str(image_data.get('value') or '')
+    if image_data.get('type') != 'b64' and value.startswith(('/output/', '/assets/', '/api/storage-files/')):
         return value
-    value = value
     try:
-        timeout = httpx.Timeout(connect=20.0, read=300.0, write=60.0, pool=20.0)
-        async with httpx.AsyncClient(timeout=timeout, follow_redirects=True) as client:
-            response = await client.get(value)
-            response.raise_for_status()
-            content_type = response.headers.get('Content-Type', '')
-            if 'jpeg' in content_type or 'jpg' in content_type:
-                filename = filename[:-4] + '.jpg'
-                path = output_path_for(filename, category)
-            elif 'webp' in content_type:
-                filename = filename[:-4] + '.webp'
-                path = output_path_for(filename, category)
-            with open(path, 'wb') as f:
-                f.write(response.content)
-            return output_url_for(filename, category)
-    except Exception as e:
-        print(f'保存上游图片失败: {e}; url={value}')
+        if image_data['type'] == 'b64':
+            raw = base64.b64decode(value, validate=True)
+            mime = image_data.get('mime_type', '')
+        else:
+            timeout = httpx.Timeout(connect=20.0, read=300.0, write=60.0, pool=20.0)
+            async with httpx.AsyncClient(timeout=timeout, follow_redirects=True) as client:
+                async with client.stream('GET', value) as response:
+                    response.raise_for_status()
+                    chunks, total = [], 0
+                    async for chunk in response.aiter_bytes():
+                        total += len(chunk)
+                        if strict and total > gpt_image26.MAX_OUTPUT_BYTES:
+                            raise ValueError('图片文件超过 40 MB')
+                        chunks.append(chunk)
+                    raw = b''.join(chunks)
+                    mime = response.headers.get('Content-Type', '')
+        extension, _, _, _, _ = gpt_image26.image_info(raw, mime, max_bytes=gpt_image26.MAX_OUTPUT_BYTES if strict else None)
+        filename = f'{prefix}{uuid.uuid4().hex[:10]}{extension}'
+        path = output_path_for(filename, category)
+        temporary = path + '.part'
+        try:
+            with open(temporary, 'wb') as target:
+                target.write(raw)
+            os.replace(temporary, path)
+        finally:
+            if os.path.exists(temporary):
+                os.remove(temporary)
+        return output_url_for(filename, category)
+    except Exception as exc:
+        if strict or image_data.get('type') == 'b64':
+            raise HTTPException(502, '生成成果保存失败，可通过已有任务继续下载。') from exc
+        logging.getLogger(__name__).warning('upstream_image_save_failed')
         return value
+
+
+@functools.lru_cache(maxsize=8)
+def svg_preview_bytes(path, modified_ns):
+    return gpt_image26.raster_svg(Path(path).read_bytes())
+
+
+def open_media_image(path):
+    if isinstance(path, (str, Path)) and str(path).lower().endswith('.svg'):
+        return Image.open(BytesIO(gpt_image26.raster_svg(Path(path).read_bytes())))
+    return Image.open(path)
+
+
+def safe_media_response(path, **kwargs):
+    if str(path).lower().endswith('.svg') and not kwargs.get('filename'):
+        try:
+            raw = svg_preview_bytes(str(path), os.stat(path).st_mtime_ns)
+            return Response(raw, media_type='image/png', headers={'X-Content-Type-Options': 'nosniff', 'Content-Security-Policy': "default-src 'none'; sandbox"})
+        except Exception:
+            raise HTTPException(422, 'SVG 无法安全预览，请下载原文件。') from None
+    return FileResponse(path, **kwargs)
+
 
 def image_output_meta(url, source_item=None):
     meta = {"url": url, "kind": "image"}
@@ -8714,8 +8747,8 @@ def image_output_meta(url, source_item=None):
     path = output_file_from_url(url)
     if path and os.path.exists(path):
         try:
-            with Image.open(path) as img:
-                width, height = img.size
+            extension, mime, width, height, animated = gpt_image26.image_info(Path(path).read_bytes(), content_type_for_path(path), max_bytes=None)
+            meta.update(output_format=extension.lstrip('.'), mime=mime, animated=animated)
             if width > 0 and height > 0:
                 meta.update({
                     "natural_w": width,
@@ -9009,6 +9042,8 @@ def is_apimart_nano_banana_2_model(model):
     }
 
 def apimart_image_reference_limit(model):
+    if gpt_image26.is_model(model):
+        return 16
     if is_apimart_gpt_image_25_ext_model(model):
         return 16
     if is_apimart_gpt_image_25_model(model):
@@ -9403,10 +9438,18 @@ async def post_with_overload_retry(client, url, *, retries=3, delay=3.0, **kwarg
             await asyncio.sleep(wait)
     return resp
 
-async def generate_ai_image(prompt, size, quality, model, reference_images=None, provider_id='comfly', aspect_ratio='', resolution='', output_format='', output_compression=None, background='', version='flare'):
+async def generate_ai_image(prompt, size, quality, model, reference_images=None, provider_id='comfly', aspect_ratio='', resolution='', output_format='', output_compression=None, background='', version='flare', complexity='', svg=None):
     provider = get_api_provider(provider_id)
     if is_tudou_provider(provider):
         model = tudou_image_model_for_request(model)
+    is_gpt26_ext = is_apimart_provider(provider) and gpt_image26.is_model(model)
+    ext26_body = None
+    if is_gpt26_ext:
+        if not str(prompt or '').strip():
+            raise HTTPException(400, 'GPT-Image-2.6 Ext 提示词不能为空。')
+        if any(str(ref.get('role') or '').lower() == 'mask' for ref in reference_images or []):
+            raise HTTPException(400, 'GPT-Image-2.6 Ext 不支持遮罩，请将图片作为普通参考图。')
+        ext26_body = gpt_image26.normalize(size, resolution, version, quality, output_format, complexity, svg, len(reference_images or []))
     is_gpt25_ext = is_apimart_provider(provider) and is_apimart_gpt_image_25_ext_model(model)
     if is_gpt25_ext:
         if len(reference_images or []) > 16:
@@ -9448,14 +9491,14 @@ async def generate_ai_image(prompt, size, quality, model, reference_images=None,
     gen_url = provider_endpoint_url(provider, 'image_generation_endpoint', '/v1/images/generations')
     edit_url = provider_endpoint_url(provider, 'image_edit_endpoint', '/v1/images/edits')
     refs = [ref for ref in reference_images or [] if ref.get('url')]
-    if is_gpt25_ext:
+    if is_gpt25_ext or is_gpt26_ext:
         mask_refs = []
         image_refs = refs
     else:
         mask_refs = [ref for ref in refs if str(ref.get('role') or '').strip().lower() == 'mask' or str(ref.get('name') or '').lower().endswith('_mask.png')]
         image_refs = [ref for ref in refs if ref not in mask_refs]
     image_request_mode = effective_image_request_mode(provider, model)
-    if is_gpt25_ext and image_request_mode != 'openai':
+    if (is_gpt25_ext or is_gpt26_ext) and image_request_mode != 'openai':
         raise HTTPException(status_code=400, detail='GPT-Image-2.5 Ext 需使用 APIMart 标准图像请求模式')
     if image_request_mode == 'openai-video-proxy' and gpt2_background and str(background or '').strip():
         raise HTTPException(status_code=400, detail='OpenAI Video Proxy 请求模式尚不支持 GPT-Image-2 背景参数')
@@ -9472,7 +9515,13 @@ async def generate_ai_image(prompt, size, quality, model, reference_images=None,
                 if gpt2_output_format:
                     data['output_format'] = gpt2_output_format
             return await client.post(edit_url, headers=api_headers(json_body=False, provider=provider, model=model), data=data, files=edit_files if edit_files is not None else {})
-        if is_gpt25_ext:
+        if is_gpt26_ext:
+            body = {**ext26_body, 'prompt': prompt}
+            if image_refs:
+                body['image_urls'] = [gpt_image26.reference_data_url(ref, output_file_from_url) for ref in image_refs]
+            # A timed-out submission has an unknown outcome. Never repeat a paid POST.
+            response = await client.post(gen_url, headers=api_headers(provider=provider, model=model), json=body)
+        elif is_gpt25_ext:
             body = {'model': 'gpt-image-2.5-ext', 'version': version, 'prompt': prompt, 'size': size, 'resolution': resolution, 'n': 1, 'background': ext_background}
             if image_refs:
                 data_urls = []
@@ -9668,10 +9717,16 @@ async def generate_ai_image(prompt, size, quality, model, reference_images=None,
             task_id = apimart_gpt_image_25_ext_task_id(raw) if is_gpt25_ext else extract_task_id(raw)
             if not task_id:
                 raise
+        if is_gpt26_ext:
+            IMAGE26_JOURNAL.update(task_id, provider_id=provider['id'], model=model, prompt=prompt, params=ext26_body, references=[{'url':ref['url']} for ref in reference_images or [] if str(ref.get('url','')).startswith(('/output/','/assets/','/api/storage-files/'))], status='generating')
         try:
             task_result = await wait_for_image_task(client, task_id, provider)
+            if is_gpt26_ext:
+                task_result = {**task_result, 'task_id': task_id}
             return (extract_image(task_result), task_result)
-        except HTTPException as exc:
+        except Exception as exc:
+            if is_gpt26_ext:
+                IMAGE26_JOURNAL.update(task_id, status='failed' if '生图任务失败' in str(getattr(exc,'detail','')) else 'waiting')
             setattr(exc, 'upstream_task_id', task_id)
             raise
 
@@ -9725,7 +9780,10 @@ def image_size_from_reference(ref):
     if not path:
         return ""
     try:
-        with Image.open(path) as img:
+        if str(path).lower().endswith('.svg'):
+            width, height = gpt_image26.svg_dimensions(Path(path).read_bytes())
+            return f"{width}x{height}"
+        with open_media_image(path) as img:
             width, height = img.size
         if width > 0 and height > 0:
             return f"{width}x{height}"
@@ -9954,7 +10012,7 @@ def view_image(filename: str, type: str = "input", subfolder: str = ""):
         if safe_name:
             local_path = output_path_for(safe_name, "input" if type == "input" else "output")
             if os.path.isfile(local_path):
-                return FileResponse(local_path, media_type=content_type_for_path(local_path))
+                return safe_media_response(local_path, media_type=content_type_for_path(local_path))
     raise HTTPException(status_code=404, detail="Image not found on any available backend")
 
 @app.get('/api/download-output')
@@ -9965,7 +10023,7 @@ def download_output(request: Request, url: str, name: str='', inline: bool=False
         path = local_media_file_by_basename(filename_from_media_url(url, ''))
     if path:
         filename = sanitize_export_filename(os.path.basename(name) if name else os.path.basename(path), os.path.basename(path))
-        return FileResponse(path, media_type=content_type_for_path(path), filename=None if inline else filename)
+        return safe_media_response(path, media_type=content_type_for_path(path), filename=None if inline else filename)
     parsed = urllib.parse.urlparse(str(url or '').strip())
     if parsed.scheme not in ('http', 'https') or not parsed.netloc:
         raise HTTPException(status_code=400, detail='无效的下载地址')
@@ -10113,7 +10171,7 @@ async def upload_image(files: List[UploadFile] = File(...)):
 @app.post("/api/ai/upload")
 async def upload_ai_reference(files: List[UploadFile] = File(...)):
     uploaded = []
-    image_exts = {".png", ".jpg", ".jpeg", ".webp", ".gif"}
+    image_exts = {".svg", ".png", ".jpg", ".jpeg", ".webp", ".gif"}
     video_exts = {".mp4", ".webm", ".mov", ".m4v", ".flv"}
     audio_exts = {".mp3", ".wav", ".m4a", ".aac", ".ogg", ".flac"}
     doc_exts = {".pdf", ".txt", ".md", ".markdown", ".doc", ".docx", ".xls", ".xlsx", ".csv", ".json", ".zip", ".yaml", ".yml", ".log"}
@@ -10217,7 +10275,7 @@ async def upload_comfyui_base64(payload: Base64UploadRequest):
     return {"name": comfy_name}
 
 def _local_upload_kind_ext(filename, content_type):
-    image_exts = {".png", ".jpg", ".jpeg", ".webp", ".gif"}
+    image_exts = {".svg", ".png", ".jpg", ".jpeg", ".webp", ".gif"}
     video_exts = {".mp4", ".webm", ".mov", ".m4v", ".flv"}
     audio_exts = {".mp3", ".wav", ".m4a", ".aac", ".ogg", ".flac"}
     ext = os.path.splitext(filename or "")[1].lower()
@@ -10330,7 +10388,7 @@ def _local_upload_item(filename):
     }
     if kind == "image":
         try:
-            with Image.open(path) as img:
+            with open_media_image(path) as img:
                 item["natural_w"], item["natural_h"] = img.size
                 item["width"], item["height"] = img.size
         except Exception:
@@ -11530,10 +11588,17 @@ async def build_online_image_result(payload: OnlineImageRequest):
     default_model = (provider.get("image_models") or [IMAGE_MODEL])[0]
     model = selected_model(payload.model, default_model)
     is_gpt25_ext = is_apimart_provider(provider) and is_apimart_gpt_image_25_ext_model(model)
-    request_size = snap_size_to_multiple(payload.size, 16)
+    is_gpt26_ext = is_apimart_provider(provider) and gpt_image26.is_model(model)
+    request_size = payload.size if is_gpt26_ext else snap_size_to_multiple(payload.size, 16)
     request_resolution = payload.resolution
     request_version = payload.version
     request_background = payload.background
+    if is_gpt26_ext:
+        if any(not ref.url.strip() or (ref.kind and ref.kind.lower() != 'image') for ref in payload.reference_images):
+            raise HTTPException(400, '参考图存在失效地址或非图片素材，请重新选择。')
+        normalized26 = gpt_image26.normalize(payload.size, payload.resolution, payload.version, payload.quality, payload.output_format, payload.complexity, payload.svg, len(payload.reference_images))
+        request_size, request_resolution, request_version = normalized26['size'], normalized26['resolution'], normalized26['version']
+        request_background = ''
     if is_gpt25_ext:
         if len(payload.reference_images) > 16:
             raise HTTPException(status_code=400, detail="GPT-Image-2.5 Ext 参考图最多 16 张，请移除超出的图片")
@@ -11561,7 +11626,7 @@ async def build_online_image_result(payload: OnlineImageRequest):
                 payload.prompt, request_size, payload.quality, model, image_refs, provider["id"],
                 payload.aspect_ratio, request_resolution,
                 payload.output_format, payload.output_compression, request_background,
-                version=request_version,
+                version=request_version, complexity=payload.complexity, svg=payload.svg,
             )
         try:
             image_items = extract_images(raw_item) if isinstance(raw_item, dict) else [image_data]
@@ -11570,22 +11635,41 @@ async def build_online_image_result(payload: OnlineImageRequest):
         local_urls = []
         local_items = []
         for item in image_items:
-            local_url = await save_ai_image_to_output(item, prefix="online_")
+            try:
+                local_url = await save_ai_image_to_output(item, prefix="online_", strict=is_gpt26_ext)
+            except HTTPException as exc:
+                if is_gpt26_ext:
+                    setattr(exc, 'upstream_task_id', extract_task_id(raw_item))
+                raise
             if local_url:
                 local_urls.append(local_url)
                 local_items.append(image_output_meta(local_url, item))
+        if is_gpt26_ext and extract_task_id(raw_item):
+            IMAGE26_JOURNAL.update(extract_task_id(raw_item), status='completed', images=local_urls, image_items=local_items)
         return local_urls, local_items, raw_item
     try:
-        generated = await asyncio.gather(*(generate_one() for _ in range(count)))
+        if is_gpt26_ext:
+            outcomes = await asyncio.gather(*(generate_one() for _ in range(count)), return_exceptions=True)
+            generated = [item for item in outcomes if not isinstance(item, BaseException)]
+            partial_errors = [{'index': index + 1, 'error': str(getattr(item, 'detail', None) or item), 'task_id': getattr(item, 'upstream_task_id', '')} for index, item in enumerate(outcomes) if isinstance(item, BaseException)]
+            if not generated:
+                raise next(item for item in outcomes if isinstance(item, BaseException))
+        else:
+            partial_errors = []
+            generated = await asyncio.gather(*(generate_one() for _ in range(count)))
     except httpx.HTTPStatusError as exc:
         log_net_error(f"生图 HTTP状态错误 provider={provider.get('id')} model={model} size={request_size}", exc)
         text = exc.response.text or ''
         friendly = friendly_image_error_detail(text, request_size, model)
         detail = friendly or f"上游生图接口错误：{text[:300]}"
-        raise HTTPException(status_code=exc.response.status_code, detail=detail) from exc
+        error=HTTPException(status_code=exc.response.status_code, detail=detail)
+        setattr(error,'upstream_task_id',getattr(exc,'upstream_task_id',''))
+        raise error from exc
     except httpx.HTTPError as exc:
         log_net_error(f"生图 网络/TLS错误 provider={provider.get('id')} model={model}", exc)
-        raise HTTPException(status_code=502, detail=f"请求上游生图接口失败：{exc}") from exc
+        error=HTTPException(status_code=502, detail=f"请求上游生图接口失败：{exc}")
+        setattr(error,'upstream_task_id',getattr(exc,'upstream_task_id',''))
+        raise error from exc
 
     local_urls = [url for urls, _items, _raw in generated for url in (urls or []) if url]
     local_items = [item for _urls, items, _raw in generated for item in (items or []) if item.get("url")]
@@ -11605,7 +11689,9 @@ async def build_online_image_result(payload: OnlineImageRequest):
         "provider_name": provider.get("name") or provider["id"],
         "task_id": (apimart_gpt_image_25_ext_task_id(raw) if is_gpt25_ext else extract_task_id(raw)) if isinstance(raw, dict) else None,
         "request_id": raw.get("id") if isinstance(raw, dict) else None,
+        "partial_errors": partial_errors,
         "params": {"provider_id": provider["id"], "model": model, "size": request_size, "requested_size": payload.size, "quality": payload.quality, "n": count, "reference_images": refs,
+                   **({"version":payload.version,"resolution":"1k","output_format":payload.output_format or "png","complexity":payload.complexity,"svg":payload.svg} if is_gpt26_ext else {}),
                    **({"version": request_version, "resolution": request_resolution, "background": request_background} if is_gpt25_ext else {})},
         "raw_usage": raw.get("usage") if isinstance(raw, dict) else None,
     }
@@ -11843,7 +11929,7 @@ async def canvas_layers_psd(payload: LayersPsdRequest):
         if not path or not os.path.isfile(path):
             continue
         try:
-            img = Image.open(path).convert('RGBA')
+            img = open_media_image(path).convert('RGBA')
         except Exception:
             continue
         entry = {'image': img, 'url': url, 'role': str(raw.get('role') or '').lower(),
@@ -11980,7 +12066,7 @@ async def canvas_seedream_layer_split(payload: SeedreamLayerSplitRequest):
         path = output_file_from_url(local)
         if path and os.path.isfile(path):
             try:
-                with Image.open(path) as im:
+                with open_media_image(path) as im:
                     meta["width"], meta["height"] = im.size
             except Exception:
                 pass
@@ -12279,6 +12365,11 @@ async def get_midjourney_task(task_id: str, provider_id: str):
 async def query_image_task(payload: ImageTaskQueryRequest):
     provider = get_api_provider(payload.provider_id)
     task_id = str(payload.task_id or '').strip()
+    remembered = IMAGE26_JOURNAL.get(task_id)
+    if remembered and remembered.get('provider_id') != provider['id']:
+        raise HTTPException(400, '请选择任务原先使用的平台。')
+    if remembered and remembered.get('status') == 'completed' and all(output_file_from_url(url) for url in remembered.get('images', [])) and remembered.get('images'):
+        return {**remembered, 'status':'succeeded'}
     timeout = httpx.Timeout(connect=20.0, read=300.0, write=60.0, pool=20.0)
     try:
         async with httpx.AsyncClient(timeout=timeout, follow_redirects=True) as client:
@@ -12300,16 +12391,21 @@ async def query_image_task(payload: ImageTaskQueryRequest):
         local_urls = []
         local_items = []
         for item in image_items:
-            local_url = await save_ai_image_to_output(item, prefix='online_')
+            local_url = await save_ai_image_to_output(item, prefix='online_', strict=bool(remembered))
             if local_url:
                 local_urls.append(local_url)
                 local_items.append(image_output_meta(local_url, item))
         result = {'status': 'succeeded', 'prompt': '', 'images': local_urls, 'image_items': local_items, 'timestamp': time.time(), 'type': 'online', 'model': '', 'provider_id': provider['id'], 'provider_name': provider.get('name') or provider['id'], 'task_id': task_id, 'request_id': raw.get('id') if isinstance(raw, dict) else '', 'params': {'provider_id': provider['id']}, 'raw': raw}
+        if remembered:
+            result.update(model=remembered['model'],prompt=remembered.get('prompt',''),params=remembered.get('params',{}))
+            IMAGE26_JOURNAL.update(task_id, status='completed',images=local_urls,image_items=local_items)
         save_to_history(result)
         if GLOBAL_LOOP:
             asyncio.run_coroutine_threadsafe(manager.broadcast_new_image(result), GLOBAL_LOOP)
         return result
     if status in IMAGE_TASK_FAILED_STATUSES:
+        if remembered:
+            IMAGE26_JOURNAL.update(task_id,status='failed')
         return {'status': 'failed', 'task_id': task_id, 'provider_id': provider['id'], 'provider_name': provider.get('name') or provider['id'], 'error': image_task_fail_reason(raw), 'raw': raw}
     return {'status': 'running', 'task_id': task_id, 'provider_id': provider['id'], 'provider_name': provider.get('name') or provider['id'], 'message': '任务仍在生成中', 'raw': raw}
 
@@ -12454,6 +12550,7 @@ def build_image_param_fields(engine: str, provider: dict, model: str):
     is_apimart = engine == 'api' and is_apimart_provider(provider)
     is_gpt25 = is_apimart and is_apimart_gpt_image_25_model(model)
     is_gpt25_ext = is_apimart and is_apimart_gpt_image_25_ext_model(model)
+    is_gpt26 = is_apimart and gpt_image26.is_model(model)
     is_nano2 = is_apimart and is_apimart_nano_banana_2_model(model)
     gpt_auto_size = engine == 'api' and is_gpt_image_2_model(model) and (not is_gpt25)
     image_resolutions = ([{'value': '0.5k', 'label': '0.5K'}] if is_nano2 else []) + ([{'value': 'auto', 'label': '自动'}] if gpt_auto_size else []) + IMAGE_PARAM_RESOLUTIONS
@@ -12463,6 +12560,15 @@ def build_image_param_fields(engine: str, provider: dict, model: str):
     refs_field = {'key': 'reference_images', 'type': 'refs', 'label': '参考图', 'max': refs_max}
     if is_gpt25_ext:
         size_field = {'key': 'size', 'type': 'size', 'label': '尺寸', 'ratios': [{'value': value, 'label': '自动' if value == 'auto' else value} for value in ('auto', '1:1', '16:9', '9:16', '4:3', '3:4', '3:2', '2:3', '5:4', '4:5', '21:9')], 'resolutions': [{'value': value, 'label': value} for value in ('1K', '2K', '4K')], 'default': {'ratio': 'auto', 'resolution': '1K'}}
+    if is_gpt26:
+        return [
+            {'key': 'size', 'type': 'size', 'label': '尺寸', 'ratios': [{'value': r, 'label': '自动' if r == 'auto' else r} for r in ('auto', *gpt_image26.RATIOS)], 'resolutions': [{'value': '1k', 'label': '1K'}], 'default': {'ratio': 'auto', 'resolution': '1k'}},
+            {'key': 'version', 'type': 'select', 'label': '版本', 'options': [{'value': r, 'label': r.title()} for r in ('flare', 'sunburst')], 'default': 'flare'},
+            {'key': 'quality', 'type': 'select', 'label': '质量', 'options': [{'value': r, 'label': r} for r in gpt_image26.QUALITIES], 'default': 'auto'},
+            {'key': 'output_format', 'type': 'select', 'label': '输出格式', 'options': [{'value': r, 'label': r.upper()} for r in gpt_image26.FORMATS], 'default': 'png'},
+            {'key': 'complexity', 'type': 'select', 'label': '复杂度', 'options': [{'value': r, 'label': r or '自动'} for r in ('', 'low', 'medium', 'high')], 'default': ''},
+            count_field, refs_field,
+        ]
     fields = [size_field]
     if is_gpt25_ext:
         fields.append({'key': 'version', 'type': 'select', 'label': '版本', 'control': 'chips', 'options': [{'value': 'flare', 'label': 'Flare'}, {'value': 'sunburst', 'label': 'Sunburst'}], 'default': 'flare'})
@@ -14049,7 +14155,7 @@ async def canvas_stitch_images(payload: CanvasStitchRequest):
         # 第一遍：只读尺寸（不把全部图同时载入内存）
         dims = []
         for p in paths:
-            with Image.open(p) as im:
+            with open_media_image(p) as im:
                 dims.append(im.size)
         # 计算目标宽度
         widths = [d[0] for d in dims]
@@ -14078,7 +14184,7 @@ async def canvas_stitch_images(payload: CanvasStitchRequest):
         canvas_img = Image.new("RGBA", (width, total_height), (0, 0, 0, 0))
         y = 0
         for i, p in enumerate(paths):
-            with Image.open(p) as im:
+            with open_media_image(p) as im:
                 rgba = im.convert("RGBA")
                 sw, sh = scaled_dims[i]
                 if target_w and (sw, sh) != dims[i]:
@@ -14112,7 +14218,7 @@ async def canvas_split_long_image(payload: CanvasSplitRequest):
     mode = payload.mode if payload.mode in ("parts", "height", "width") else "parts"
     value = max(1, int(payload.value or 1))
     try:
-        with Image.open(path) as im:
+        with open_media_image(path) as im:
             im.load()
             w, h = im.size
             boxes = []
@@ -14368,6 +14474,7 @@ async def import_canvas(file: UploadFile=File(...), project: str=Form('')):
     now = now_ms()
     canvas = dict(canvas_data)
     canvas['id'] = uuid.uuid4().hex
+    canvas['revision'] = 0  # Imported canvas starts a new revision history.
     canvas['kind'] = normalize_canvas_kind(canvas.get('kind'))
     canvas['title'] = str(canvas.get('title') or ('智能画布' if canvas['kind'] == 'smart' else '未命名画布'))[:80]
     canvas['icon'] = str(canvas.get('icon') or ('sparkles' if canvas['kind'] == 'smart' else '🧩'))[:32]
@@ -14555,6 +14662,7 @@ async def _import_project_zip(tmp_path):
             continue
         canvas = dict(canvas_data)
         canvas['id'] = uuid.uuid4().hex
+        canvas['revision'] = 0  # Imported canvas starts a new revision history.
         canvas['kind'] = normalize_canvas_kind(canvas.get('kind'))
         canvas['title'] = str(canvas.get('title') or ('智能画布' if canvas['kind'] == 'smart' else '未命名画布'))[:80]
         canvas['icon'] = str(canvas.get('icon') or ('sparkles' if canvas['kind'] == 'smart' else '🧩'))[:32]
@@ -14771,6 +14879,8 @@ async def download_canvas_assets(payload: CanvasAssetDownloadRequest):
 
         try:
             if payload.compress:
+                if base.lower().endswith('.svg'):
+                    content = gpt_image26.raster_svg(content)
                 content, extension, media_type = ecommerce_compressed_image(content, payload.max_image_bytes, payload.compress_format)
                 base = ecommerce_compressed_name(base, f"image-{index + 1}{extension}", extension)
             else:
@@ -15463,7 +15573,7 @@ async def get_shared_folder_file(folder_id: str, path: str = ""):
     ext = os.path.splitext(abs_path)[1].lower()
     if ext not in SHARED_MEDIA_EXTS:
         raise HTTPException(status_code=400, detail="不支持的文件类型")
-    return FileResponse(abs_path, media_type=content_type_for_path(abs_path))
+    return safe_media_response(abs_path, media_type=content_type_for_path(abs_path))
 
 @app.post("/api/shared-folders/import")
 async def import_shared_folder_files(payload: SharedFolderImport):
@@ -15774,7 +15884,7 @@ async def batch_crop_asset_library_items(payload: AssetLibraryBatchCropRequest):
                 if not src or not os.path.isfile(src):
                     continue
                 try:
-                    with Image.open(src) as img:
+                    with open_media_image(src) as img:
                         img = img.convert("RGBA")
                         w, h = img.size
                         side = min(w, h)
@@ -15886,9 +15996,9 @@ async def chat(payload: ChatRequest, request: Request, x_user_id: str = Header(d
                 image_refs,
                 provider["id"],
                 payload.aspect_ratio,
-                payload.resolution,
+                payload.resolution, version=payload.version, output_format=payload.output_format, complexity=payload.complexity, svg=payload.svg,
             )
-            local_url = await save_ai_image_to_output(image_data, prefix="chat_")
+            local_url = await save_ai_image_to_output(image_data, prefix="chat_", strict=gpt_image26.is_model(model))
         except httpx.HTTPStatusError as exc:
             text = exc.response.text or ""
             detail = friendly_image_error_detail(text, image_size, model) or f"上游生图接口错误：{text[:300]}"
@@ -16041,9 +16151,9 @@ async def chat_agent(payload: ChatRequest, request: Request, x_user_id: str = He
                     tool_refs,
                     image_provider["id"],
                     payload.aspect_ratio,
-                    payload.resolution,
+                    payload.resolution, version=payload.version, output_format=payload.output_format, complexity=payload.complexity, svg=payload.svg,
                 )
-                local_urls.append(await save_ai_image_to_output(image_data, prefix="chat_"))
+                local_urls.append(await save_ai_image_to_output(image_data, prefix="chat_", strict=gpt_image26.is_model(model)))
                 raw_items.append(raw)
         except httpx.HTTPStatusError as exc:
             text = exc.response.text or ""
@@ -17813,6 +17923,8 @@ AGENT_RUNTIME_DIR = os.path.join(BASE_DIR, "static", "agent-runtime")
 sys.dont_write_bytecode = True
 if AGENT_RUNTIME_DIR not in sys.path:
     sys.path.insert(0, AGENT_RUNTIME_DIR)
+import gpt_image26
+IMAGE26_JOURNAL = gpt_image26.TaskJournal(DATA_DIR)
 from agent_canvas_ops import CanvasOperations
 from minimax_video import install_minimax_video
 MINIMAX_VIDEO_SERVICE = install_minimax_video(app, sys.modules[__name__])

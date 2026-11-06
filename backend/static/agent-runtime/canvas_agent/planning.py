@@ -102,6 +102,9 @@ def validate_settings(host, step, refs):
         exact = next((str(r) for r in ratios if str(r) != "auto" and ":" in str(r) and abs(float(str(r).split(":")[0]) / float(str(r).split(":")[1]) - width / height) < 0.000001), None)
         if exact:
             settings["ratio"] = exact
+        elif cap.get("closest_source_ratio"):
+            ratio_value = width / height
+            settings["ratio"] = min((r for r in ratios if ":" in str(r)), key=lambda r: abs(ratio_value / (float(r.split(":")[0]) / float(r.split(":")[1])) - 1))
         elif cap.get("source_ratio"):
             settings["ratio"] = ratio
             settings["width"], settings["height"] = width, height
@@ -124,7 +127,7 @@ def validate_settings(host, step, refs):
     if settings.get("transparent_background") and not cap.get("transparent_background"):
         raise PlanError("模型不支持透明背景。")
     supported = cap.get("settings", {})
-    for key in ("quality", "seed", "fps", "version", "background", "output_format", "output_compression", "watermark", "return_last_frame", "generate_audio", "multimodal", "use_frame_roles", "camerafixed", "trusted_asset", "enhance_prompt", "enable_upsample"):
+    for key in ("quality", "complexity", "svg", "seed", "fps", "version", "background", "output_format", "output_compression", "watermark", "return_last_frame", "generate_audio", "multimodal", "use_frame_roles", "camerafixed", "trusted_asset", "enhance_prompt", "enable_upsample"):
         if key in settings:
             if settings[key] in (None, "") or (key == "quality" and settings[key] == "auto" and key not in supported):
                 settings.pop(key, None)
@@ -263,7 +266,7 @@ def validate_plan(raw, request, snapshot, host):
                         raise PlanError("生成参数无效。")
                     if host.get("normalize_generation"):
                         supplied = host["normalize_generation"](supplied, kind)
-                    allowed_settings = {"ratio", "resolution", "duration", "size_mode", "sizeMode", "transparent_background", "quality", "seed", "fps", "version", "background", "output_format", "output_compression", "watermark", "return_last_frame", "generate_audio", "multimodal", "use_frame_roles", "camerafixed", "trusted_asset", "enhance_prompt", "enable_upsample"}
+                    allowed_settings = {"ratio", "resolution", "duration", "size_mode", "sizeMode", "transparent_background", "quality", "complexity", "svg", "seed", "fps", "version", "background", "output_format", "output_compression", "watermark", "return_last_frame", "generate_audio", "multimodal", "use_frame_roles", "camerafixed", "trusted_asset", "enhance_prompt", "enable_upsample"}
                     if set(supplied) - allowed_settings:
                         raise PlanError("包含未允许的生成参数。")
                     same_model = step["provider_id"] == generation.get("provider_id") and step["model"] == generation.get("model")

@@ -28,7 +28,8 @@ def collect_sources(user_root):
             after = path.stat()
             if (before.st_mtime_ns, before.st_size) != (after.st_mtime_ns, after.st_size):
                 raise ValueError("source_changed")
-            sources.append((kind, str(path.relative_to(root)), data))
+            if kind != "image-task" or data.get("status") not in ("completed", "failed"):
+                sources.append((kind, str(path.relative_to(root)), data))
             if kind == "import" and path.name == "job.json" and data.get("phase") != "completed":
                 # Interrupted prepare_commit can leave final copies before its
                 # canvas records are durable. Recoverable imports own those copies.
@@ -41,7 +42,8 @@ def collect_sources(user_root):
         except Exception:
             errors.append({"source": kind, "id": str(path.relative_to(root)), "code": "source_unreadable"})
 
-    for directory, kind in ((root / "data/canvases", "canvas"),
+    for directory, kind in ((root / "data/image26-tasks", "image-task"),
+                            (root / "data/canvases", "canvas"),
                             (root / "data/conversations", "conversation"),
                             (root / "workflows", "workflow"),
                             (root / "data/legacy_imports", "import")):

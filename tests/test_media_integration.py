@@ -14,6 +14,8 @@ from fastapi.testclient import TestClient
 from PIL import Image
 
 ROOT = Path(__file__).resolve().parents[1]
+# Native SVG renderer stays in the fixed program tree so Windows can release test folders.
+sys.path.insert(0, str(ROOT / "backend/static/agent-runtime"))
 
 
 class MediaIntegrationTests(unittest.TestCase):
@@ -25,7 +27,7 @@ class MediaIntegrationTests(unittest.TestCase):
         (self.program / "workflows").mkdir()
         shutil.copy2(ROOT / "backend/main.py", self.program / "main.py")
         for runtime in ("agent-runtime", "media-runtime"):
-            shutil.copytree(ROOT / "backend/static" / runtime, self.program / "static" / runtime, ignore=shutil.ignore_patterns("__pycache__"))
+            shutil.copytree(ROOT / "backend/static" / runtime, self.program / "static" / runtime, ignore=shutil.ignore_patterns("__pycache__", "svg_renderer"))
         self.env = patch.dict(os.environ, {"IC_DESKTOP_DATA_DIR": str(self.user)})
         self.env.start()
         name = "media_integration_" + base.name.replace("-", "_")

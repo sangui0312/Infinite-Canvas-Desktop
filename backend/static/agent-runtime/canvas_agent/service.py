@@ -353,7 +353,7 @@ class AgentService:
                             raise PlanError("此步骤已经提交，不能修改或重新生成。")
                         step.update({k: edit[k] for k in ("provider_id", "model", "settings") if k in edit})
                         configured(self.host, step["provider_id"], step["model"], step["kind"])
-                        allowed = {"ratio", "resolution", "duration", "size_mode", "quality", "seed", "fps", "version", "background", "output_format", "output_compression", "watermark", "return_last_frame", "generate_audio", "multimodal", "use_frame_roles", "camerafixed", "trusted_asset", "enhance_prompt", "enable_upsample", "transparent_background"}
+                        allowed = {"ratio", "resolution", "duration", "size_mode", "quality", "complexity", "svg", "seed", "fps", "version", "background", "output_format", "output_compression", "watermark", "return_last_frame", "generate_audio", "multimodal", "use_frame_roles", "camerafixed", "trusted_asset", "enhance_prompt", "enable_upsample", "transparent_background"}
                         if set(step["settings"]) - allowed:
                             raise PlanError("包含未允许的生成参数。")
                         step["settings"] = validate_settings(self.host, step, [r for r in step["references"] if "url" in r])
@@ -471,7 +471,7 @@ class AgentService:
             for index, item in enumerate(result["outputs"]):
                 if not isinstance(item, dict) or not isinstance(item.get("url"), str) or not item["url"]:
                     continue
-                outputs.append({"id": step["task_id"] + f"-{index}", "url": item["url"], "kind": item.get("kind", step["kind"]), **{k: item[k] for k in ("width", "height", "name", "h3_request", "video_warning") if k in item}})
+                outputs.append({"id": step["task_id"] + f"-{index}", "url": item["url"], "kind": item.get("kind", step["kind"]), **{k: item[k] for k in ("width", "height", "name", "h3_request", "video_warning", "output_format", "mime", "animated") if k in item}})
             if not outputs:
                 step["status"], step["error"] = "unknown", "未取得可用成果，禁止自动重发。"
             else:

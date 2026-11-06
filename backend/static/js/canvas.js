@@ -825,19 +825,20 @@ function isApimartProviderId(providerId){
         || String(provider?.protocol || '').toLowerCase() === 'apimart'
         || /apimart\.ai/i.test(String(provider?.base_url || ''));
 }
-function isGptImage25ExtModel(model){
-    return String(model || '').trim().toLowerCase() === 'gpt-image-2.5-ext';
+function isGptImageExtModel(model){
+    return String(model || '').trim().toLowerCase() === 'gpt-image-2.5-ext' || GptImage26.isModel(model);
 }
-function gpt25ExtRatioOptions(){
+function extImageRatioOptions(){
     return [['auto','自动比例'],['square','1:1'],['wide','16:9'],['story','9:16'],['landscape43','4:3'],['portrait43','3:4'],['landscape','3:2'],['portrait','2:3'],['5:4','5:4'],['4:5','4:5'],['ultrawide','21:9']];
 }
-function gpt25ExtParams(source={}, refs=[]){
+function extImageParams(source={}, refs=[]){
+    if(GptImage26.isModel(source.model)) return GptImage26.params(source, refs);
     if(refs.length > 16) throw new Error('GPT-Image-2.5 Ext 最多支持 16 张参考图，请移除多余图片后重试。');
     const version = String(source.imageVersion || 'flare').trim().toLowerCase();
     if(!['flare','sunburst'].includes(version)) throw new Error('GPT-Image-2.5 Ext 版本须为 Flare 或 Sunburst。');
     let resolution = String(source.resolution || '1k').trim().toLowerCase();
     let ratio = source.ratio ?? 'square';
-    const options = gpt25ExtRatioOptions();
+    const options = extImageRatioOptions();
     let size = options.find(([key]) => key === ratio)?.[1];
     if(ratio === 'auto') size = 'auto';
     if(ratio === 'custom' || ratio === 'source') size = String(source.customRatio || (source.customRatioWidth && source.customRatioHeight ? `${source.customRatioWidth}:${source.customRatioHeight}` : '')).trim();
@@ -865,15 +866,16 @@ function isApimartGptImage25Model(model){
     return ['gpt-image-2-5-flare','gpt-image-2-5-sunburst'].includes(normalizedImageModelName(model));
 }
 function isGptImageBackgroundModel(model, providerId=''){
+    if(GptImage26.isModel(model)) return false;
     const standardGpt2 = ['gpt-image-2','gpt-image-2-official','gpt-image-2-2026-04-21'].includes(String(model || '').trim().toLowerCase());
-    return standardGpt2 || isGptImage25ExtModel(model) || (isApimartProviderId(providerId) && isApimartGptImage25Model(model));
+    return standardGpt2 || isGptImageExtModel(model) || (isApimartProviderId(providerId) && isApimartGptImage25Model(model));
 }
 function imageBackgroundForModel(value, model, providerId=''){
     if(['auto','opaque','transparent'].includes(value)) return value;
     return isApimartProviderId(providerId) && isApimartGptImage25Model(model) ? 'auto' : 'opaque';
 }
 function imageBackgroundSupportTitle(model, providerId=''){
-    if(isGptImage25ExtModel(model)) return '背景';
+    if(isGptImageExtModel(model)) return '背景';
     const undeclaredApimartModel = ['gpt-image-2','gpt-image-2-2026-04-21'].includes(String(model || '').trim().toLowerCase());
     return isApimartProviderId(providerId) && undeclaredApimartModel
         ? '背景：渠道未声明支持背景参数，实际以返回结果为准' : '背景';
@@ -883,7 +885,7 @@ function isApimartNanoBanana2Model(model){
 }
 function imageReferenceLimitForModel(model, providerId=''){
     if(!isApimartProviderId(providerId)) return CANVAS_REFERENCE_IMAGE_MAX;
-    if(isGptImage25ExtModel(model) || isApimartGptImage25Model(model)) return 16;
+    if(isGptImageExtModel(model) || isApimartGptImage25Model(model)) return 16;
     if(isApimartNanoBanana2Model(model)) return 14;
     if(isGptImageAutoSizeModel(model)) return 15;
     return CANVAS_REFERENCE_IMAGE_MAX;
@@ -892,7 +894,7 @@ function isGptImageAutoSizeModel(model){
     const raw = String(model || '').trim().toLowerCase();
     const normalized = raw.replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '');
     const compact = raw.replace(/[^a-z0-9]+/g, '');
-    if(isGptImage25ExtModel(model) || isApimartGptImage25Model(model)) return false;
+    if(isGptImageExtModel(model) || isApimartGptImage25Model(model)) return false;
     return normalized === 'gpt-image-2'
         || normalized.startsWith('gpt-image-2-')
         || normalized.endsWith('-gpt-image-2')
@@ -902,10 +904,11 @@ function isGptImageAutoSizeModel(model){
         || compact.endsWith('gptimage2');
 }
 function defaultApiImageResolution(model){
+    if(GptImage26.isModel(model)) return '1k';
     return '1k';
 }
 function normalizedImageQuality(value, model='', providerId=''){
-    if(isGptImage25ExtModel(model)) return '';
+    if(isGptImageExtModel(model)) return '';
     const quality = String(value || 'auto').trim().toLowerCase();
     const allowed = isApimartProviderId(providerId) && isApimartGptImage25Model(model)
         ? ['low','medium','high','xhigh','max','auto']
@@ -1118,7 +1121,7 @@ function exceedsFourKStandard(width, height){
 }
 function normalizeApiNodeSizeChoice(node){
     if(!node) return;
-    if(isGptImage25ExtModel(node.model)){
+    if(isGptImageExtModel(node.model)){
         if(!node.imageVersion) node.imageVersion = 'flare';
         return;
     }
@@ -1129,7 +1132,7 @@ function normalizeApiNodeSizeChoice(node){
     if(node.resolution === '0.5k' && !(isApimartProviderId(node.apiProvider) && isApimartNanoBanana2Model(node.model))) node.resolution = '1k';
 }
 async function generatorSizeForRun(gen, refs){
-    if(isGptImage25ExtModel(gen.model) && gen.ratio === 'source'){
+    if(isGptImageExtModel(gen.model) && gen.ratio === 'source'){
         const currentRefs=imageRefsOnly(refs || []);
         const ref=currentRefs[Math.min(Math.max(0, Number(gen.sourceRatioImageIndex) || 0), Math.max(0,currentRefs.length - 1))];
         gen.customRatio = currentRefs.length ? '' : '1:1';
@@ -1138,7 +1141,7 @@ async function generatorSizeForRun(gen, refs){
             try{ const dims=await getImageDimensions(ref.url); gen.customRatio=`${dims.width}:${dims.height}`; }
             catch(_){}
         }
-        return gpt25ExtParams(gen, currentRefs).size;
+        return extImageParams(gen, currentRefs).size;
     }
 
     if((gen.ratio || 'square') === 'source'){
@@ -1159,7 +1162,7 @@ async function generatorSizeForRun(gen, refs){
             } catch(_) {}
         }
     }
-    if(isGptImage25ExtModel(gen.model)) return gpt25ExtParams(gen, refs).size;
+    if(isGptImageExtModel(gen.model)) return extImageParams(gen, refs).size;
     const ratio = (gen.ratio === 'source' && !gen.customRatio)
         ? 'square'
         : (gen.ratio ?? 'square');
@@ -9358,19 +9361,30 @@ function renderGeneratorBody(node){
     const sourceRatioItems = sourceRatioItemsFromSources(ordered);
     const sourceRatioRefs = () => imageRefsOnly(sourceRatioItems.map(item => item.ref));
     const syncQualityControls = () => {
-        const ext = isGptImage25ExtModel(node.model);
+        const ext = isGptImageExtModel(node.model);
         versionSelect.style.display = ext ? '' : 'none';
         if(ext && !node.imageVersion) node.imageVersion = 'flare';
         versionSelect.value = node.imageVersion || 'flare';
-        qualitySelect.style.display = ext ? 'none' : '';
+        const ext26=GptImage26.isModel(node.model);
+        qualitySelect.style.display = ext && !ext26 ? 'none' : '';
         const gpt25 = isApimartProviderId(node.apiProvider) && isApimartGptImage25Model(node.model);
-        const qualityOptions = gpt25
+        const qualityOptions = (gpt25 || ext26)
             ? [['auto','Q auto'],['low','Q low'],['medium','Q med'],['high','Q high'],['xhigh','Q xhigh'],['max','Q max']]
             : [['auto','Q auto'],['low','Q low'],['medium','Q med'],['high','Q high']];
         qualitySelect.innerHTML = qualityOptions.map(([value, label]) => `<option value="${value}">${label}</option>`).join('');
         if(!qualityOptions.some(([value]) => value === String(node.quality || 'auto'))) node.quality = 'auto';
         qualitySelect.value = node.quality || 'auto';
         const hasBackground = isGptImageBackgroundModel(node.model, node.apiProvider);
+        let extra=wrap.querySelector('.ext26-controls');
+        if(!extra){extra=document.createElement('div');extra.className='gen-settings-row ext26-controls';versionSelect.parentNode.after(extra);}
+        extra.style.display=ext26 ? 'flex' : 'none';
+        if(ext26){
+            versionSelect.style.display='none';
+            extra.innerHTML=GptImage26.controls(node,'select-lite');
+            const hint=document.createElement('span');hint.style.cssText='font-size:10px;opacity:.65';
+            try{hint.textContent='请求 '+GptImage26.params(node).size+' · 1K';}catch(error){hint.textContent=error.message;}extra.append(hint);
+            GptImage26.bind(extra,node,()=>{syncSizeControls();syncQualityControls();scheduleSave();});
+        }
         if(modelOutputRow) modelOutputRow.style.display = hasBackground ? 'flex' : 'none';
         if(outputFormatSelect) outputFormatSelect.style.display = gpt25 ? '' : 'none';
         if(outputCompressionSelect) outputCompressionSelect.style.display = gpt25 ? '' : 'none';
@@ -9441,13 +9455,17 @@ function renderGeneratorBody(node){
     const originalRatioOptions = ratioSelect.innerHTML;
     const originalResolutionOptions = resolutionSelect.innerHTML;
     const syncSizeControls = () => {
-        const ext = isGptImage25ExtModel(node.model);
+        const ext = isGptImageExtModel(node.model);
         ratioSelect.innerHTML = originalRatioOptions;
         resolutionSelect.innerHTML = originalResolutionOptions;
         if(ext){
             for(const [value,label] of [['auto','自动比例'],['5:4','5:4'],['4:5','4:5']]){
                 const option=document.createElement('option'); option.value=value; option.textContent=label; ratioSelect.appendChild(option);
             }
+        }
+        if(GptImage26.isModel(node.model)){
+            [...resolutionSelect.options].forEach(option=>option.disabled=!['1k','custom'].includes(option.value));
+            const unsupported=ratioSelect.querySelector('option[value="ultratall"]'); if(unsupported)unsupported.disabled=true;
         }
         normalizeApiNodeSizeChoice(node);
         const autoOption = resolutionSelect.querySelector('option[value="auto"]');
@@ -9518,6 +9536,10 @@ function renderGeneratorBody(node){
         e.stopPropagation();
         if(node.imageSizeFromReference) delete node.imageSizeFromReference;
         node.ratio = e.target.value;
+        if(GptImage26.isModel(node.model)){
+            [...resolutionSelect.options].forEach(option=>option.disabled=!['1k','custom'].includes(option.value));
+            const unsupported=ratioSelect.querySelector('option[value="ultratall"]'); if(unsupported)unsupported.disabled=true;
+        }
         normalizeApiNodeSizeChoice(node);
         if(node.ratio !== 'custom' && node.ratio !== 'source') {
             node.customRatio = '';
@@ -9554,6 +9576,10 @@ function renderGeneratorBody(node){
             node.customSize = '';
             node.customWidth = '';
             node.customHeight = '';
+        }
+        if(GptImage26.isModel(node.model)){
+            [...resolutionSelect.options].forEach(option=>option.disabled=!['1k','custom'].includes(option.value));
+            const unsupported=ratioSelect.querySelector('option[value="ultratall"]'); if(unsupported)unsupported.disabled=true;
         }
         normalizeApiNodeSizeChoice(node);
         syncSizeControls();
@@ -9595,7 +9621,7 @@ function renderGeneratorBody(node){
             if(!ref) return;
             try {
                 const dims = await getImageDimensions(ref.url);
-                if(isGptImage25ExtModel(node.model)) node.imageSizeFromReference = true;
+                if(isGptImageExtModel(node.model)) node.imageSizeFromReference = true;
                 node.customWidth = dims.width;
                 node.customHeight = dims.height;
                 node.customSize = `${dims.width}x${dims.height}`;
@@ -10317,10 +10343,11 @@ async function runGenerator(genId, opts={}){
     const refs = imageRefsOnly(sources.flatMap(s => s.refs || []));
     const downloadSourceRef = loopImageDownloadRef(sources);
     if(!prompt && !refs.length){ alert(tr('canvas.needPromptOrImage')); return; }
+    const imageRunSettings = GptImage26.isModel(gen.model) ? {...gen} : gen;
     let extParams = null;
-    if(isGptImage25ExtModel(gen.model)){
+    if(isGptImageExtModel(gen.model)){
         if(!opts.cascade) gen.running = true;
-        try { await generatorSizeForRun(gen, refs); extParams = gpt25ExtParams(gen, refs); }
+        try { await generatorSizeForRun(imageRunSettings, refs); extParams = extImageParams(imageRunSettings, refs); }
         catch(error){ gen.running = false; if(opts.cascade) throw error; showErrorModal(error.message); return; }
     }
     const count = Math.max(1, Math.min(8, Number(gen.count || 1)));
@@ -10329,13 +10356,13 @@ async function runGenerator(genId, opts={}){
     if(downloadSourceRef) run.downloadSourceRef = downloadSourceRef;
     const outputBatch = out ? allocateOutputBatch(out, cascadeTargetId) : null;
     const inheritedSlot = outputSlotFromItem(outputBatch);
-    const providerId = resolveImageProviderId(gen.apiProvider || 'comfly');
-    const model = resolveImageModel(gen.model);
+    const providerId = resolveImageProviderId(imageRunSettings.apiProvider || 'comfly');
+    const model = resolveImageModel(imageRunSettings.model);
     const payload = {
         prompt: prompt || 'Edit the reference images.',
         provider_id:providerId,
         model,
-        size:await generatorSizeForRun(gen, refs),
+        size:await generatorSizeForRun(imageRunSettings, refs),
         reference_images:refs.slice(0, imageReferenceLimitForModel(model, providerId))
     };
     if(extParams) Object.assign(payload, extParams, {reference_images:refs, n:1});
@@ -10442,17 +10469,18 @@ async function runGeneratorLegacy(genId, opts={}){
     const prompt = sources.map(s => s.prompt).filter(Boolean).join('\n\n');
     const refs = imageRefsOnly(sources.flatMap(s => s.refs || []));
     if(!prompt && !refs.length){ alert(tr('canvas.needPromptOrImage')); return; }
+    const imageRunSettings = GptImage26.isModel(gen.model) ? {...gen} : gen;
     let extParams = null;
-    if(isGptImage25ExtModel(gen.model)){
+    if(isGptImageExtModel(gen.model)){
         if(!opts.cascade) gen.running = true;
-        try { await generatorSizeForRun(gen, refs); extParams = gpt25ExtParams(gen, refs); }
+        try { await generatorSizeForRun(imageRunSettings, refs); extParams = extImageParams(imageRunSettings, refs); }
         catch(error){ gen.running = false; if(opts.cascade) throw error; showErrorModal(error.message); return; }
     }
     const count = Math.max(1, Math.min(8, Number(gen.count || 1)));
     let out = outputForNode(gen, 460);
     const pendingIds = Array.from({length:count}, () => uid('p'));
     const run = runSnapshot(gen, prompt || 'Edit the reference images.', refs);
-    const requestSize = await generatorSizeForRun(gen, refs);
+    const requestSize = await generatorSizeForRun(imageRunSettings, refs);
     if(out) out._pending = [...(out._pending||[]), ...pendingIds.map(id => makePendingForRun(id, run, gen, {refs, requestSize}))];
     if(!opts.cascade){
         gen.running = true;
@@ -10461,8 +10489,8 @@ async function runGeneratorLegacy(genId, opts={}){
     }
     else refreshRunNodes(gen, out);
     try {
-        const providerId = resolveImageProviderId(gen.apiProvider || 'comfly');
-        const model = resolveImageModel(gen.model);
+        const providerId = resolveImageProviderId(imageRunSettings.apiProvider || 'comfly');
+        const model = resolveImageModel(imageRunSettings.model);
         const payload = {
             prompt: prompt || 'Edit the reference images.',
             provider_id:providerId,

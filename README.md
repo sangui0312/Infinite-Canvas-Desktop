@@ -25,13 +25,23 @@
 
 在线生图、视频生成等能力需要配置相应服务的 API Key，具体模型能力以所接入平台为准。桌面版已删除 RunningHub 和火山引擎的内置专属适配；APIMART 和通用 API 平台配置保留，历史成果可继续查看。
 
+## GPT-Image-2.6 Ext
+
+从 1.1.2 起支持 APIMart 的 `gpt-image-2.6-ext`。在 API 设置拉取模型并加入图片列表后，可在在线生图、对话生图、两种画布和 Agent 中选择。
+
+提供 Flare / Sunburst、六种质量、复杂度和最多 16 张参考图。当前上游开放 1K，每次请求生成一张，多张输出使用多个独立任务。适配尺寸按本轮输入匹配支持比例，循环任务保留各自参数。
+
+输出支持 PNG、JPEG、WebP、SVG 和 GIF。SVG/GIF 使用文生图，GIF 的尺寸选择自动。SVG 可填写编写模型和推理档位，留空由上游选择。SVG 原件用于下载和项目备份，画布通过安全位图预览；GIF 保留动画。SVG 用于后续位图编辑或参考图时在本地转换。
+
+本地 SVG 渲染组件随功能包分发，由构建流程固定版本及 SHA256。兼容的 1.1.0、1.1.1 各自获得文件更新包，更新保留个人资料。详细变更见 [版本说明](https://github.com/sangui0312/Infinite-Canvas-Desktop/releases/tag/v1.1.2)。
+
 ## MiniMax 视频
 
 H3 支持 4～15 秒、768P/2K；H3-Max 支持 5～15 秒、480P/768P/1080P。首尾帧模式跟随输入图片比例，普通参考图模式支持指定比例；H3-Max 1080P 不发送水印参数。图片、视频和音频的输入限制以平台文档为准。
 
 H3 768P 结果可通过视频操作区的「升至 2K」单独升级。该操作需要再次确认额外计费，保留原片并交付独立 2K 结果。升级任务保存到个人数据目录；已有任务的查询或下载失败会复用原任务，提交状态不明时停止自动重提。H3-Max 和外部视频不支持此操作；Agent 不会自动触发额外付费升级。
 
-1.1.1 对兼容的 1.1.0 桌面基础提供文件更新包；基础不兼容的旧版本自动使用安装包，升级保留个人数据。
+桌面更新依据实际运行文件选择兼容的文件包，基础不兼容的旧版本自动使用安装包，升级保留个人数据。
 
 ## 智能画布 Agent
 
@@ -195,6 +205,7 @@ git clone https://github.com/sangui0312/Infinite-Canvas-Desktop.git
 cd Infinite-Canvas-Desktop
 
 python -X utf8 tools/prepare_runtime.py
+backend/python/python.exe -B -X utf8 tools/prepare_svg_runtime.py
 $env:NODE_OPTIONS = '--use-system-ca'
 npm ci
 node --use-system-ca node_modules/electron/install.js

@@ -459,6 +459,7 @@
             background:transparent !important;
         }
     </style>
+<script src="/static/js/gpt-image26.js"></script>
 </head>
 <body>
     <div class="chat-shell">
@@ -665,6 +666,7 @@
         let activeChatModel = savedChatSettings.activeChatModel || '';
         let activeImageProvider = savedChatSettings.activeImageProvider || 'comfly';
         let activeImageModel = savedChatSettings.activeImageModel || '';
+        const image26Settings={imageVersion:'flare',outputFormat:'png',quality:'auto',complexity:'',...(savedChatSettings.image26Settings || {})};
         let systemPrompt = String(savedChatSettings.systemPrompt || '').trim();
         let apiProviders = [];
         let chatProviderModels = isObject(savedChatSettings.chatProviderModels) ? savedChatSettings.chatProviderModels : {};
@@ -719,7 +721,7 @@
                     msModel,
                     activeChatModel,
                     activeImageProvider,
-                    activeImageModel,
+                    activeImageModel, image26Settings,
                     systemPrompt,
                     chatProviderModels,
                     chatRatio,
@@ -1145,7 +1147,26 @@
             if(persist) saveChatSettings();
         }
 
+        function syncChat26Controls(){
+            let section=document.getElementById('chatExt26Controls');
+            const picker=document.getElementById('resolutionPicker');
+            if(!section && picker){
+                section=document.createElement('div');section.id='chatExt26Controls';section.style.cssText='display:flex;gap:6px;flex-wrap:wrap;align-items:center';
+                picker.parentNode.appendChild(section);
+            }
+            if(!section)return;
+            section.style.display=GptImage26.isModel(activeImageModel) && mode!=='chat' ? 'flex' : 'none';
+            if(GptImage26.isModel(activeImageModel)){
+                section.innerHTML=GptImage26.controls(image26Settings);
+                const quality=document.createElement('select');quality.setAttribute('aria-label','图片质量');quality.dataset.param='quality';
+                GptImage26.qualities.forEach(value=>{const option=document.createElement('option');option.value=value;option.textContent='质量 '+value;quality.appendChild(option);});
+                quality.value=image26Settings.quality;section.appendChild(quality);
+                GptImage26.bind(section,image26Settings,()=>{if(image26Settings.outputFormat==='gif')chatResolution='auto';saveChatSettings();syncChat26Controls();});
+                section.querySelectorAll('select,input').forEach(control=>{control.style.cssText='max-width:190px;min-width:70px;padding:6px;border:1px solid var(--chat-line);border-radius:9px;background:var(--chat-panel);color:var(--chat-text);font-size:11px';});
+            }
+        }
         function updateModelLabel(){
+            syncChat26Controls();
             let label = '';
             if (mode === 'image') {
                 label = activeImageModel || config.image_model || 'Image';
@@ -1278,7 +1299,7 @@
             ['1k','2k','4k'].forEach(label => {
                 const btn = document.querySelector(`.resolution-picker-option[data-resolution="${label}"]`);
                 const sizeEl = document.getElementById(`resolutionPreset${label}`);
-                if(btn) btn.classList.toggle('active', !isAuto && !isCustom && chatPresetResolution === label);
+                if(btn){btn.classList.toggle('active', !isAuto && !isCustom && chatPresetResolution === label);btn.disabled=GptImage26.isModel(activeImageModel) && label!=='1k';}
                 if(sizeEl) sizeEl.textContent = chatSizeForResolution(label);
             });
             ['square','portrait','portrait43','landscape43','landscape','story','wide'].forEach(label => {
@@ -1514,6 +1535,15 @@
             const btn = document.getElementById('sendBtn');
             btn.disabled = true;
             const requestedSize = chatSizeFromPrompt(message);
+            let ext26Request={};
+            if(GptImage26.isModel(activeImageModel) && mode!=='chat'){
+                try{
+                    const match=String(requestedSize || '').match(/^(\d+)x(\d+)$/);
+                    const resolvedRatio=chatResolution==='auto' ? 'auto' : match ? GptImage26.closestRatio(Number(match[1]),Number(match[2])) : chatRatio;
+                    const source={...image26Settings,model:activeImageModel,ratio:resolvedRatio,resolution:chatResolution==='auto' || chatResolution==='custom' ? '1k' : chatResolution};
+                    ext26Request=GptImage26.params(source,refs);
+                }catch(error){btn.disabled=false;alert(error.message);return;}
+            }
             const pendingRefs = refs.slice();
             refs = [];
             renderRefs();
@@ -1572,6 +1602,7 @@
                             model: provider === 'modelscope' ? (msModel || activeChatModel) : (activeChatModel || config.chat_model),
                             ms_model: provider === 'modelscope' ? (msModel || activeChatModel) : '',
                             image_model: activeImageModel || config.image_model,
+                            ...ext26Request,
                             reference_images: pendingRefs,
                             provider,
                             image_provider: activeImageProvider,
@@ -1596,6 +1627,7 @@
                             resolution: requestResolution,
                             model: activeChatModel || config.chat_model,
                             image_model: activeImageModel || config.image_model,
+                            ...ext26Request,
                             reference_images: pendingRefs,
                             provider: activeImageProvider,
                         })

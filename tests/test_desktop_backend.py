@@ -16,6 +16,8 @@ from unittest.mock import patch, AsyncMock
 import zipfile
 
 ROOT = Path(__file__).resolve().parents[1]
+# Native SVG renderer stays in the fixed program tree so Windows can release test folders.
+sys.path.insert(0, str(ROOT / "backend/static/agent-runtime"))
 spec = importlib.util.spec_from_file_location("desktop_entry_test", ROOT / "backend" / "desktop_entry.py")
 entry = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(entry)
@@ -68,8 +70,8 @@ class BackendTests(unittest.TestCase):
         (cls.app_dir / "workflows" / "default.json").write_text("{}", encoding="utf-8")
         (cls.app_dir / "VERSION").write_text("2026.10.08", encoding="utf-8")
         shutil.copy2(ROOT / "backend" / "main.py", cls.app_dir / "main.py")
-        shutil.copytree(ROOT / "backend/static/agent-runtime", cls.app_dir / "static/agent-runtime", ignore=shutil.ignore_patterns("__pycache__"))
-        shutil.copytree(ROOT / "backend/static/media-runtime", cls.app_dir / "static/media-runtime", ignore=shutil.ignore_patterns("__pycache__"))
+        shutil.copytree(ROOT / "backend/static/agent-runtime", cls.app_dir / "static/agent-runtime", ignore=shutil.ignore_patterns("__pycache__", "svg_renderer"))
+        shutil.copytree(ROOT / "backend/static/media-runtime", cls.app_dir / "static/media-runtime", ignore=shutil.ignore_patterns("__pycache__", "svg_renderer"))
         cls.env = patch.dict(os.environ, {"IC_DESKTOP_DATA_DIR": str(cls.data_dir), "IC_DESKTOP_INSTANCE": "test-instance", "IC_DESKTOP_SHELL_VERSION": "0.1.0"})
         cls.env.start()
         spec = importlib.util.spec_from_file_location("isolated_desktop_backend", cls.app_dir / "main.py")

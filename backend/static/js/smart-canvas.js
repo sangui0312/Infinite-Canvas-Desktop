@@ -772,19 +772,20 @@ function isApimartProviderId(providerId){
         || String(provider?.protocol || '').toLowerCase() === 'apimart'
         || /apimart\.ai/i.test(String(provider?.base_url || ''));
 }
-function isGptImage25ExtModel(model){
-    return String(model || '').trim().toLowerCase() === 'gpt-image-2.5-ext';
+function isGptImageExtModel(model){
+    return String(model || '').trim().toLowerCase() === 'gpt-image-2.5-ext' || GptImage26.isModel(model);
 }
-function gpt25ExtRatioOptions(){
+function extImageRatioOptions(){
     return [['auto','自动比例'],['square','1:1'],['wide','16:9'],['story','9:16'],['landscape43','4:3'],['portrait43','3:4'],['landscape','3:2'],['portrait','2:3'],['5:4','5:4'],['4:5','4:5'],['ultrawide','21:9']];
 }
-function gpt25ExtParams(source={}, refs=[]){
+function extImageParams(source={}, refs=[]){
+    if(GptImage26.isModel(source.model)) return GptImage26.params(source, refs);
     if(refs.length > 16) throw new Error('GPT-Image-2.5 Ext 最多支持 16 张参考图，请移除多余图片后重试。');
     const version = String(source.imageVersion || 'flare').trim().toLowerCase();
     if(!['flare','sunburst'].includes(version)) throw new Error('GPT-Image-2.5 Ext 版本须为 Flare 或 Sunburst。');
     let resolution = String(source.resolution || '1k').trim().toLowerCase();
     let ratio = source.ratio ?? 'square';
-    const options = gpt25ExtRatioOptions();
+    const options = extImageRatioOptions();
     let size = options.find(([key]) => key === ratio)?.[1];
     if(ratio === 'auto') size = 'auto';
     if(ratio === 'custom' || ratio === 'source') size = String(source.customRatio || (source.customRatioWidth && source.customRatioHeight ? `${source.customRatioWidth}:${source.customRatioHeight}` : '')).trim();
@@ -812,15 +813,16 @@ function isApimartGptImage25Model(model){
     return ['gpt-image-2-5-flare','gpt-image-2-5-sunburst'].includes(normalizedImageModelName(model));
 }
 function isGptImageBackgroundModel(model, providerId=''){
+    if(GptImage26.isModel(model)) return false;
     const standardGpt2 = ['gpt-image-2','gpt-image-2-official','gpt-image-2-2026-04-21'].includes(String(model || '').trim().toLowerCase());
-    return standardGpt2 || isGptImage25ExtModel(model) || (isApimartProviderId(providerId) && isApimartGptImage25Model(model));
+    return standardGpt2 || isGptImageExtModel(model) || (isApimartProviderId(providerId) && isApimartGptImage25Model(model));
 }
 function imageBackgroundForModel(value, model, providerId=''){
     if(['auto','opaque','transparent'].includes(value)) return value;
     return isApimartProviderId(providerId) && isApimartGptImage25Model(model) ? 'auto' : 'opaque';
 }
 function imageBackgroundSupportTitle(model, providerId=''){
-    if(isGptImage25ExtModel(model)) return '背景';
+    if(isGptImageExtModel(model)) return '背景';
     const undeclaredApimartModel = ['gpt-image-2','gpt-image-2-2026-04-21'].includes(String(model || '').trim().toLowerCase());
     return isApimartProviderId(providerId) && undeclaredApimartModel
         ? '背景：渠道未声明支持背景参数，实际以返回结果为准' : '背景';
@@ -830,7 +832,7 @@ function isApimartNanoBanana2Model(model){
 }
 function imageReferenceLimitForModel(model, providerId=''){
     if(!isApimartProviderId(providerId)) return SMART_REFERENCE_IMAGE_MAX;
-    if(isGptImage25ExtModel(model) || isApimartGptImage25Model(model)) return 16;
+    if(isGptImageExtModel(model) || isApimartGptImage25Model(model)) return 16;
     if(isApimartNanoBanana2Model(model)) return 14;
     if(isGptImageAutoSizeModel(model)) return 15;
     return SMART_REFERENCE_IMAGE_MAX;
@@ -839,7 +841,7 @@ function isGptImageAutoSizeModel(model){
     const raw = String(model || '').trim().toLowerCase();
     const normalized = raw.replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '');
     const compact = raw.replace(/[^a-z0-9]+/g, '');
-    if(isGptImage25ExtModel(model) || isApimartGptImage25Model(model)) return false;
+    if(isGptImageExtModel(model) || isApimartGptImage25Model(model)) return false;
     return normalized === 'gpt-image-2'
         || normalized.startsWith('gpt-image-2-')
         || normalized.endsWith('-gpt-image-2')
@@ -849,6 +851,7 @@ function isGptImageAutoSizeModel(model){
         || compact.endsWith('gptimage2');
 }
 function defaultSmartApiResolution(model){
+    if(GptImage26.isModel(model)) return '1k';
     return isGptImageAutoSizeModel(model) ? '4k' : '1k';
 }
 function mediaItemForStorage(item){
@@ -2557,7 +2560,7 @@ function sanitizeSmartApiSelection(target=settings){
         if(models.length && !models.includes(target.model)) target.model = models[0] || '';
     }
     if((target.engine || 'api') === 'api' && (target.apiKind || 'image') !== 'video'){
-        if(isGptImage25ExtModel(target.model)){ if(!target.imageVersion) target.imageVersion = 'flare'; return target; }
+        if(isGptImageExtModel(target.model)){ if(!target.imageVersion) target.imageVersion = 'flare'; return target; }
         const allowAuto = isGptImageAutoSizeModel(target.model);
         if(!target.resolution) target.resolution = allowAuto ? defaultSmartApiResolution(target.model) : '1k';
         if(!allowAuto && target.resolution === 'auto') target.resolution = '1k';
@@ -2756,7 +2759,7 @@ function apiImageSize(ratioValue, resolutionValue, customRatioValue='', customSi
     return SIZE_MAP[ratioKey]?.[resolutionKey] || SIZE_MAP.square[resolutionKey] || SIZE_MAP.square['1k'];
 }
 function normalizeApiSizeSettings(prefix=''){
-    if(!prefix && settings.engine === 'api' && isGptImage25ExtModel(settings.model)){ if(!settings.imageVersion) settings.imageVersion = 'flare'; return; }
+    if(!prefix && settings.engine === 'api' && isGptImageExtModel(settings.model)){ if(!settings.imageVersion) settings.imageVersion = 'flare'; return; }
     const ratioKey = prefix ? `${prefix}Ratio` : 'ratio';
     const resKey = prefix ? `${prefix}Resolution` : 'resolution';
     const allowAuto = !prefix && settings.engine === 'api' && settings.apiKind !== 'video' && isGptImageAutoSizeModel(settings.model);
@@ -3204,7 +3207,7 @@ function renderRatioControl(prefix='', includeSource=false){
 }
 function renderResolutionControl(prefix=''){
     const resKey = prefix ? `${prefix}Resolution` : 'resolution';
-    const options = (!prefix && settings.engine === 'api') ? ['auto','1k','2k','4k','custom'] : ['1k','2k','4k','custom'];
+    const options = (!prefix && settings.engine === 'api' && GptImage26.isModel(settings.model)) ? ['1k'] : (!prefix && settings.engine === 'api') ? ['auto','1k','2k','4k','custom'] : ['1k','2k','4k','custom'];
     const current = settings[resKey] || ((!prefix && settings.engine === 'api') ? defaultSmartApiResolution(settings.model) : '1k');
     const allowAuto = !prefix && settings.engine === 'api' && settings.apiKind !== 'video' && isGptImageAutoSizeModel(settings.model);
     return `<div class="smart-control resolution-control">
@@ -3221,7 +3224,7 @@ function sizePickerScope(prefix=''){
     const resKey = prefix ? `${prefix}Resolution` : 'resolution';
     const ratioKey = prefix ? `${prefix}Ratio` : 'ratio';
     const value = settings[resKey] || ((!prefix && settings.engine === 'api') ? defaultSmartApiResolution(settings.model) : '1k');
-    if(value === 'auto' || (!prefix && isGptImage25ExtModel(settings.model) && settings[ratioKey] === 'auto')) return 'auto';
+    if(value === 'auto' || (!prefix && isGptImageExtModel(settings.model) && settings[ratioKey] === 'auto')) return 'auto';
     if(value === 'custom' || settings[ratioKey] === 'custom') return 'custom';
     return 'preset';
 }
@@ -3230,8 +3233,11 @@ function sizePickerDefaultResolution(prefix=''){
     return value === 'auto' ? '1k' : value;
 }
 function sizePickerLabel(prefix=''){
+    if(!prefix && settings.apiKind !== 'video' && GptImage26.isModel(settings.model)){
+        try{return `${GptImage26.params(settings).size} · 1K`;}catch(_){return '适配输入 · 1K';}
+    }
     const scope = sizePickerScope(prefix);
-    if(scope === 'auto') return !prefix && isGptImage25ExtModel(settings.model) ? `自动 · ${resolutionLabel(prefix)}` : '自动';
+    if(scope === 'auto') return !prefix && isGptImageExtModel(settings.model) ? `自动 · ${resolutionLabel(prefix)}` : '自动';
     if(scope === 'custom'){
         const resKey = prefix ? `${prefix}Resolution` : 'resolution';
         const ratioKey = prefix ? `${prefix}Ratio` : 'ratio';
@@ -3249,17 +3255,17 @@ function renderSizePickerControl(prefix='', includeSource=false){
     const resKey = prefix ? `${prefix}Resolution` : 'resolution';
     const customRatioKey = prefix ? `${prefix}CustomRatio` : 'customRatio';
     if(settings[ratioKey] === 'source') applySourceRatioToSettings(prefix);
-    const ext = !prefix && settings.engine === 'api' && settings.apiKind !== 'video' && isGptImage25ExtModel(settings.model);
+    const ext = !prefix && settings.engine === 'api' && settings.apiKind !== 'video' && isGptImageExtModel(settings.model);
     const scope = sizePickerScope(prefix);
     const nano2 = !prefix && settings.engine === 'api' && isApimartProviderId(settings.provider_id) && isApimartNanoBanana2Model(settings.model);
-    const options = (!prefix && settings.engine === 'api') ? (nano2 ? ['0.5k','1k','2k','4k'] : ['auto','1k','2k','4k']) : ['1k','2k','4k'];
+    const options = (!prefix && settings.engine === 'api' && GptImage26.isModel(settings.model)) ? ['1k'] : (!prefix && settings.engine === 'api') ? (nano2 ? ['0.5k','1k','2k','4k'] : ['auto','1k','2k','4k']) : ['1k','2k','4k'];
     const currentRes = settings[resKey] || ((!prefix && settings.engine === 'api') ? defaultSmartApiResolution(settings.model) : '1k');
     const currentRatio = settings[ratioKey] || 'square';
     const currentCustomRatio = settings[customRatioKey] || (currentRatio === 'source' ? sourceImageRatioLabel(prefix) : '');
     const allowAuto = !prefix && settings.engine === 'api' && settings.apiKind !== 'video' && (isGptImageAutoSizeModel(settings.model) || ext);
     const ratios = [
         ['square','1:1','正方形'], ['portrait','2:3','竖图'], ['landscape','3:2','横图'], ['portrait43','3:4','竖图'], ['landscape43','4:3','横图'],
-        ['story','9:16','竖屏'], ['wide','16:9','宽屏'], ['ultrawide','21:9','超宽'], ['ultratall','9:21','超竖'],
+        ['story','9:16','竖屏'], ['wide','16:9','宽屏'], ['ultrawide','21:9','超宽'], ...(!ext ? [['ultratall','9:21','超竖']] : []),
         ...(ext ? [['auto','自动','自动比例'],['5:4','5:4','横图'],['4:5','4:5','竖图']] : []),
         ...(includeSource ? [['source', sourceImageRatioLabel(prefix) || '原图', '适配输入']] : [])
     ];
@@ -3320,11 +3326,11 @@ function renderInlineCustomSizeFields(prefix=''){
     </div>`;
 }
 function renderQualityControl(){
-    if(settings.engine === 'api' && settings.apiKind !== 'video' && isGptImage25ExtModel(settings.model)) return '';
+    if(settings.engine === 'api' && settings.apiKind !== 'video' && isGptImageExtModel(settings.model) && !GptImage26.isModel(settings.model)) return '';
     let value = settings.quality || 'auto';
     const isGpt25 = settings.engine === 'api' && settings.apiKind !== 'video' && isApimartProviderId(settings.provider_id) && isApimartGptImage25Model(settings.model);
     const labels = {auto:tr('smart.qualityAuto'), low:tr('smart.qualityLow'), medium:tr('smart.qualityMid'), high:tr('smart.qualityHigh')};
-    if(isGpt25){
+    if(isGpt25 || GptImage26.isModel(settings.model)){
         labels.xhigh = tr('smart.qualityXhigh');
         labels.max = tr('smart.qualityMax');
     } else if(['xhigh','max'].includes(value)){
@@ -3342,7 +3348,8 @@ function renderQualityControl(){
     </div>`;
 }
 function renderApimartOutputControls(){
-    if(settings.engine === 'api' && settings.apiKind !== 'video' && isGptImage25ExtModel(settings.model)){
+    if(settings.engine === 'api' && settings.apiKind !== 'video' && GptImage26.isModel(settings.model)) return GptImage26.controls(settings);
+    if(settings.engine === 'api' && settings.apiKind !== 'video' && isGptImageExtModel(settings.model)){
         if(!settings.imageVersion) settings.imageVersion = 'flare';
         return '<select data-param="imageVersion" aria-label="Ext 版本" title="Ext 版本">' + ['flare','sunburst'].map(value => '<option value="' + value + '" ' + (value === settings.imageVersion ? 'selected' : '') + '>' + (value === 'flare' ? 'Flare' : 'Sunburst') + '</option>').join('') + '</select>' + '<select data-param="background" aria-label="Ext 背景" title="背景">' + ['auto','opaque','transparent'].map(value => '<option value="' + value + '" ' + (value === imageBackgroundForModel(settings.background, settings.model, settings.provider_id) ? 'selected' : '') + '>' + ({auto:'背景自动',opaque:'不透明',transparent:'透明'})[value] + '</option>').join('') + '</select>';
     }
@@ -3678,8 +3685,9 @@ function smartComfyRandomValue(field){
 }
 function setDynamicSetting(key, value){
     const numericKeys = new Set(['count','width','height','videoDuration','enhanceStrength','enhanceUpscaleRes','editUpscaleRes','customRatioWidth','customRatioHeight','customWidth','customHeight','msCustomRatioWidth','msCustomRatioHeight','msCustomWidth','msCustomHeight','outputCompression']);
-    const layoutKeys = new Set(['provider_id','model','resolution','ratio','outputFormat','imageVersion','msgenModel','msCustomModel','msResolution','msRatio','videoProvider','videoModel','videoAspect','videoResolution','comfyMode','comfyWorkflow','quality','count','enhanceUpscaleRes','editUpscaleRes','jimengUpscaleRes','rhConfigKey','rhPayment','rhInstanceType']);
+    const layoutKeys = new Set(['provider_id','model','resolution','ratio','outputFormat','imageVersion','complexity','svgModel','svgEffort','msgenModel','msCustomModel','msResolution','msRatio','videoProvider','videoModel','videoAspect','videoResolution','comfyMode','comfyWorkflow','quality','count','enhanceUpscaleRes','editUpscaleRes','jimengUpscaleRes','rhConfigKey','rhPayment','rhInstanceType']);
     settings[key] = numericKeys.has(key) && value !== '' ? Number(value) : value;
+    if(GptImage26.isModel(settings.model) && key === 'outputFormat' && value === 'gif'){settings.ratio='auto';settings.resolution='1k';}
     if(key === 'videoDuration') settings.videoDurationMode = 'manual';
     if(key === 'provider_id') settings.model = '';
     if(key === 'outputFormat' && isApimartProviderId(settings.provider_id) && isApimartGptImage25Model(settings.model) && settings.outputFormat === 'jpeg' && settings.background === 'transparent') settings.background = 'auto';
@@ -3782,7 +3790,7 @@ function bindDynamicParams(){
             const scope = btn.dataset.sizeScope;
             const resKey = prefix ? `${prefix}Resolution` : 'resolution';
             const ratioKey = prefix ? `${prefix}Ratio` : 'ratio';
-            const ext=!prefix && settings.engine === 'api' && settings.apiKind !== 'video' && isGptImage25ExtModel(settings.model);
+            const ext=!prefix && settings.engine === 'api' && settings.apiKind !== 'video' && isGptImageExtModel(settings.model);
             const allowAuto = !prefix && settings.engine === 'api' && settings.apiKind !== 'video' && (isGptImageAutoSizeModel(settings.model) || ext);
             if(scope === 'auto'){
                 if(!allowAuto) return;
@@ -13714,7 +13722,7 @@ async function handleSmartImageDropPayload(payload, targetId='', opts={}){
     }
 }
 function sizeForRun(sourceSettings=settings){
-    if(sourceSettings.engine === 'api' && isGptImage25ExtModel(sourceSettings.model)) return gpt25ExtParams(sourceSettings).size;
+    if(sourceSettings.engine === 'api' && isGptImageExtModel(sourceSettings.model)) return extImageParams(sourceSettings).size;
     const fallbackResolution = sourceSettings.engine === 'api' && isGptImageAutoSizeModel(sourceSettings.model)
         ? defaultSmartApiResolution(sourceSettings.model)
         : '1k';
@@ -16508,7 +16516,7 @@ async function runApiGeneration(prompt, refs, runSettings=settings){
     const count = Math.max(1, Math.min(8, Number(runSettings.count || 1)));
     const providerId = runSettings.provider_id;
     const model = runSettings.model;
-    if(isGptImage25ExtModel(model) && runSettings.ratio === 'source'){
+    if(isGptImageExtModel(model) && runSettings.ratio === 'source'){
         const currentRefs=imageRefsOnly(refs);
         runSettings={...runSettings, customRatio:currentRefs.length ? '' : '1:1', customRatioWidth:'', customRatioHeight:''};
         const ref=currentRefs[0];
@@ -16517,7 +16525,7 @@ async function runApiGeneration(prompt, refs, runSettings=settings){
             catch(_){}
         }
     }
-    const extParams = isGptImage25ExtModel(model) ? gpt25ExtParams(runSettings, imageRefsOnly(refs)) : null;
+    const extParams = isGptImageExtModel(model) ? extImageParams(runSettings, imageRefsOnly(refs)) : null;
     const isGpt25 = isApimartProviderId(providerId) && isApimartGptImage25Model(model);
     const payload = {
         prompt,
@@ -16532,7 +16540,7 @@ async function runApiGeneration(prompt, refs, runSettings=settings){
     };
     if(extParams){
         Object.assign(payload, extParams, {reference_images:imageRefsOnly(refs)});
-        delete payload.quality;
+        if(!GptImage26.isModel(model)) delete payload.quality;
         delete payload.aspect_ratio;
     }
     if(isGpt25){

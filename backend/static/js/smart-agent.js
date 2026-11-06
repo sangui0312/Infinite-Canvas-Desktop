@@ -60,8 +60,11 @@
                 add('背景',settings.transparent_background ? '透明' : translated(pick('background'),{auto:'自动',opaque:'不透明',transparent:'透明'}));
                 if (settings.transparent_background === false) add('透明背景','关闭');
                 const selectedModel=metadata.model || settings.model || '';
-                add('图片版本',pick('version') || (selectedModel === 'gpt-image-2.5-ext' ? pick('imageVersion') : undefined));
+                add('图片版本',pick('version') || (['gpt-image-2.5-ext','gpt-image-2.6-ext'].includes(selectedModel) ? pick('imageVersion') : undefined));
                 add('输出格式',pick('output_format') || (settings.outputFormat !== 'png' || selectedModel === 'gpt-image-2-official' ? pick('outputFormat') : undefined));
+                add('复杂度',pick('complexity'));
+                add('SVG 编写模型',settings.svg?.model || settings.svgModel);
+                add('SVG 推理档位',settings.svg?.reasoning?.effort || settings.svgEffort);
                 add('输出压缩质量',pick('output_compression','outputCompression'));
             }
             add('随机种子',pick('seed'));
@@ -152,7 +155,7 @@
             await revisePlan({steps});
             closeMenu();
         }));applyGeneration.hidden=true;generation.append(applyGeneration);
-        const settingNames={ratio:'画面比例',resolution:'分辨率',duration:'时长（秒）',quality:'质量',version:'图片版本',background:'背景',output_format:'输出格式',output_compression:'压缩质量',generate_audio:'生成音频',use_frame_roles:'首尾帧',multimodal:'多模态参考',return_last_frame:'返回尾帧',watermark:'水印',camerafixed:'固定镜头',trusted_asset:'可信素材',enhance_prompt:'提示词增强',enable_upsample:'升采样',seed:'随机种子',fps:'帧率'};
+        const settingNames={ratio:'画面比例',resolution:'分辨率',duration:'时长（秒）',quality:'质量',complexity:'复杂度',version:'图片版本',background:'背景',output_format:'输出格式',output_compression:'压缩质量',generate_audio:'生成音频',use_frame_roles:'首尾帧',multimodal:'多模态参考',return_last_frame:'返回尾帧',watermark:'水印',camerafixed:'固定镜头',trusted_asset:'可信素材',enhance_prompt:'提示词增强',enable_upsample:'升采样',seed:'随机种子',fps:'帧率'};
         function parameterEditor(initial, fixedKind, onSave) {
             const box=el('div','sa-parameter-editor'), grid=el('div','sa-controls'), fields=el('div','sa-controls'), feedback=el('p','sa-muted');
             const kind=el('select'), platform=el('select'), selectedModel=el('select');
@@ -169,6 +172,8 @@
                 if(!ready)throw new Error('生成参数尚未准备好，请选择支持的模型。');
                 const result={apiKind:kind.value,provider_id:platform.value,model:selectedModel.value,count:Number(values.count?.value || 1)};
                 Object.entries(values).forEach(([key,control])=>{if(key==='count' || control.value==='')return;const value=control._options ? control._options.find(v=>String(v)===control.value) : control.value;if(value===undefined)throw new Error('请重新选择模型支持的'+(settingNames[key] || key)+'。');result[key]=value;});
+                if(result.svgModel){result.svg={model:result.svgModel};if(result.svgEffort)result.svg.reasoning={effort:result.svgEffort};}delete result.svgModel;delete result.svgEffort;
+                if(result.output_format!=='svg')delete result.svg;
                 if(result.ratio==='source'){delete result.ratio;result.size_mode='source';}else result.size_mode='fixed';
                 if(!fixedKind)result.locks=policy.value==='fixed'?['provider_id','model','ratio','resolution','duration','count','size_mode'].filter(k=>result[k]!==undefined):[];
                 return result;
@@ -185,6 +190,11 @@
                     choice('resolution',cap.resolutions,saved.resolution?.toLowerCase());choice('duration',cap.durations,saved.duration);
                     if(!fixedKind) {const control=el('select');fill(control,Array.from({length:4},(_,i)=>[i+1,String(i+1)]),saved.count || 1);values.count=control;fields.append(label('数量',control));}
                     Object.entries(cap.settings || {}).forEach(([key,options])=>{if(Array.isArray(options) && (options.length>1 || saved[key]!==undefined))choice(key,options,saved[key]);});
+                    if(cap.settings?.svg){
+                        const svgModel=el('input');svgModel.value=saved.svg?.model || '';svgModel.maxLength=160;svgModel.placeholder='留空由上游选择';
+                        values.svgModel=svgModel;fields.append(label('SVG 编写模型',svgModel));
+                        choice('svgEffort',['','none','minimal','low','medium','high','xhigh','max'],saved.svg?.reasoning?.effort || '');
+                    }
                     ready=true;feedback.textContent=fixedKind?'修改后点击应用，再重新批准。':'用于新计划；待确认计划需点击应用。数量仅用于新计划。';if(buttonSave)buttonSave.disabled=false;
                     if(!fixedKind)updateToolbar();
                 }catch(err){if(token===revision){feedback.textContent=err.message;ready=false;}}
@@ -480,6 +490,7 @@
                 const initial={...generationSettings,provider_id:generationProvider,model:video?generationSettings.videoModel:generationSettings.model,ratio:video?generationSettings.videoAspect:aliases[generationSettings.ratio] || generationSettings.ratio,resolution:video?generationSettings.videoResolution:generationSettings.resolution,duration:generationSettings.videoDuration,version:generationSettings.imageVersion};
                 const aliasesSettings=video?{videoGenerateAudio:'generate_audio',videoUseFrameRoles:'use_frame_roles',videoMultimodal:'multimodal',videoReturnLastFrame:'return_last_frame',videoWatermark:'watermark',videoCameraFixed:'camerafixed',videoTrustedAsset:'trusted_asset',videoEnhancePrompt:'enhance_prompt',videoEnableUpsample:'enable_upsample'}:{outputFormat:'output_format',outputCompression:'output_compression'};
                 Object.entries(aliasesSettings).forEach(([from,to])=>{if(generationSettings[from]!==undefined)initial[to]=generationSettings[from];});
+                if(generationSettings.svgModel){initial.svg={model:generationSettings.svgModel};if(generationSettings.svgEffort)initial.svg.reasoning={effort:generationSettings.svgEffort};}
                 if(initial.transparent_background)initial.background='transparent';
                 initial.defaults={};
                 if(!video && generationSettings.videoProvider && generationSettings.videoModel)initial.defaults.video={apiKind:'video',provider_id:generationSettings.videoProvider,model:generationSettings.videoModel,ratio:generationSettings.videoAspect,resolution:generationSettings.videoResolution,duration:generationSettings.videoDuration};

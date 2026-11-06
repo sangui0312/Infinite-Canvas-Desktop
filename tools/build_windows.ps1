@@ -8,6 +8,8 @@ try {
     $env:NODE_OPTIONS = (($previousOptions, '--use-system-ca') | Where-Object { $_ }) -join ' '
     & python -B -X utf8 tools/prepare_runtime.py
     if ($LASTEXITCODE -ne 0) { throw 'Pinned Windows runtime preparation failed.' }
+    & backend/python/python.exe -B -X utf8 tools/prepare_svg_runtime.py
+    if ($LASTEXITCODE -ne 0) { throw 'SVG renderer preparation failed.' }
     if ($InstallDependencies) {
         & npm.cmd ci --no-audit --no-fund
         if ($LASTEXITCODE -ne 0) { throw 'Dependency install failed.' }

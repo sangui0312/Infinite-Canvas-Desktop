@@ -19,7 +19,7 @@ import uuid
 from media_sources import collect_sources
 
 DAY = 86400
-MEDIA_EXTS = {".png", ".jpg", ".jpeg", ".webp", ".gif", ".bmp", ".avif", ".mp4", ".mov", ".webm", ".mkv", ".m4v", ".avi"}
+MEDIA_EXTS = {".svg", ".png", ".jpg", ".jpeg", ".webp", ".gif", ".bmp", ".avif", ".mp4", ".mov", ".webm", ".mkv", ".m4v", ".avi"}
 SENSITIVE = {"api_key", "apikey", "token", "authorization", "cookie", "password", "credentials"}
 
 

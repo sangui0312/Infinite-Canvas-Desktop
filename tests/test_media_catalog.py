@@ -61,6 +61,17 @@ class CatalogTests(unittest.TestCase):
         self.assertEqual(asset["category"], "observing")
         self.assertEqual(self.catalog.references(aid)["references"], [])
 
+    def test_svg_and_active_image26_tasks_obey_the_same_lifecycle(self):
+        aid=self.image('output/result.svg')['id']
+        task=self.source('data/image26-tasks/task.json',{'status':'generating','references':[{'url':'/assets/output/result.svg'}]})
+        self.assertEqual(self.catalog.scan()['assets'][0]['category'],'referenced')
+        self.assertEqual(self.catalog.move_to_trash([aid],'active-task')['results'][0]['code'],'asset_protected')
+        task.write_text(json.dumps({'status':'completed','images':['/assets/output/result.svg']}),encoding='utf-8')
+        self.assertEqual(self.catalog.scan()['assets'][0]['category'],'observing')
+        journal=self.trash(aid,'svg-trash')
+        result=self.catalog.restore([journal],'svg-restore')
+        self.assertEqual(result['results'][0]['status'],'restored')
+
     def test_all_persistent_json_owners_protect(self):
         aid = self.image()["id"]
         sources = {"data/canvases/a.json": "canvas", "data/conversations/u/c.json": "conversation", "history.json": "history", "data/asset_library.json": "asset_library", "workflows/custom.json": "workflow", "data/legacy_imports/job/job.json": "import"}

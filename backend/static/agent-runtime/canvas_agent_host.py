@@ -12,6 +12,7 @@ from pathlib import Path
 import re
 
 import httpx
+import gpt_image26
 from fastapi import HTTPException
 
 
@@ -55,6 +56,13 @@ def normalize_generation(settings, kind=None):
         result["ratio"] = RATIO_NAMES.get(result["ratio"], result["ratio"])
     if result.get("resolution"):
         result["resolution"] = str(result["resolution"]).lower()
+    if ui_snapshot and gpt_image26.is_model(result.get("model")):
+        result.pop("background", None)
+        result.pop("output_compression", None)
+        if raw.get("svgModel"):
+            result["svg"] = {"model": raw["svgModel"]}
+            if raw.get("svgEffort"):
+                result["svg"]["reasoning"] = {"effort": raw["svgEffort"]}
     if ui_snapshot:
         for key in ("background", "quality", "output_format", "output_compression"):
             if result.get(key) in (None, ""):
@@ -62,7 +70,7 @@ def normalize_generation(settings, kind=None):
     # These UI controls remain in the global settings object even while hidden
     # for another model. Their inactive defaults are not model instructions.
     model = str(result.get("model", "")).lower()
-    if "imageVersion" in (settings or {}) and model and model != "gpt-image-2.5-ext":
+    if "imageVersion" in (settings or {}) and model and model not in ("gpt-image-2.5-ext", "gpt-image-2.6-ext"):
         result.pop("version", None)
     if model and (not model.startswith("gpt-image-2") or model == "gpt-image-2.5-ext"):
         if "outputFormat" in (settings or {}) and result.get("output_format") == "png":
@@ -99,7 +107,11 @@ def create_host(module, canvas_ops):
         cli = flag("is_codex_provider", p) or flag("is_gemini_cli_provider", p)
         cap = {"available": True, "ratios": [], "resolutions": [], "durations": [], "max_references": 0, "source_ratio": False, "auto_ratio": False, "recoverable": False, "cancellable": False, "settings": {}}
         if kind == "image":
-            if name == "gpt-image-2.5-ext" and apimart:
+            if gpt_image26.is_model(name) and apimart:
+                cap.update(ratios=list(gpt_image26.RATIOS) + ["auto"], resolutions=["1k"], max_references=16, auto_ratio=True, source_ratio=True, recoverable=True, closest_source_ratio=True)
+                cap["settings"] = {"version": ["flare", "sunburst"], "quality": list(gpt_image26.QUALITIES), "output_format": list(gpt_image26.FORMATS), "complexity": ["", "low", "medium", "high"], "svg": True}
+                cap["format_rules"] = {"svg": {"references": False, "optional_model": True, "reasoning_efforts": list(gpt_image26.EFFORTS)}, "gif": {"references": False, "ratio": "auto"}, "upstream_count": 1}
+            elif name == "gpt-image-2.5-ext" and apimart:
                 cap.update(ratios=EXT_RATIOS + ["auto"], resolutions=["1k", "2k", "4k"], max_references=16, auto_ratio=True, recoverable=True, transparent_background=True)
                 cap["settings"] = {"version": ["flare", "sunburst"], "background": ["auto", "opaque", "transparent"]}
             elif name in ("gpt-image-2.5-flare", "gpt-image-2.5-sunburst", "gpt-image-2-5-flare", "gpt-image-2-5-sunburst") and apimart:
@@ -193,7 +205,7 @@ def create_host(module, canvas_ops):
                 try:
                     path = local_file(item["url"])
                     from PIL import Image
-                    with Image.open(path) as image:
+                    with getattr(m, 'open_media_image', Image.open)(path) as image:
                         item["width"], item["height"] = image.size
                 except (HTTPException, OSError, ValueError):
                     # No remote fetch to inspect context. Generation revalidates file access.
@@ -256,6 +268,10 @@ def create_host(module, canvas_ops):
 
     def image_size(settings, cap):
         ratio = settings.get("ratio", "1:1")
+        if cap.get("closest_source_ratio"):
+            if settings.get("size_mode") == "source" and settings.get("width") and settings.get("height"):
+                return gpt_image26.closest_ratio(settings["width"], settings["height"])
+            return ratio
         if ratio == "auto":
             return "auto"
         if settings.get("width") and settings.get("height") and settings.get("size_mode") == "source":
@@ -297,8 +313,15 @@ def create_host(module, canvas_ops):
                     continue
                 raise HTTPException(422, "所选生成参数不受模型支持，已阻止提交。")
         for key, values in cap["settings"].items():
-            if key in settings and settings[key] not in (None, "") and settings[key] not in values:
+            if key in settings and settings[key] not in (None, "") and isinstance(values, list) and settings[key] not in values:
                 raise HTTPException(422, "所选生成选项不受模型支持，已阻止提交。")
+        if spec["kind"] == "image" and gpt_image26.is_model(spec["model"]):
+            if settings.get("transparent_background"):
+                raise HTTPException(422, "GPT-Image-2.6 Ext 的背景参数不生效，请调整生成要求。")
+            if settings.get("size_mode") == "source" and spec.get("references"):
+                with m.open_media_image(local_file(spec["references"][0]["url"])) as image:
+                    settings["ratio"] = gpt_image26.closest_ratio(*image.size)
+            gpt_image26.normalize(settings.get("ratio", "auto"), settings.get("resolution", "1k"), settings.get("version", "flare"), settings.get("quality", ""), settings.get("output_format", "png"), settings.get("complexity", ""), settings.get("svg"), len(spec.get("references", [])))
         for key in ("enhance_prompt", "enable_upsample"):
             if settings.get(key):
                 raise HTTPException(422, "提示词增强或升采样涉及额外任务，请使用手动入口单独确认。")
@@ -343,7 +366,7 @@ def create_host(module, canvas_ops):
             if not isinstance(record, dict) or not record.get("url"):
                 continue
             local_file(record["url"])
-            output={"url": record["url"], "kind": kind, **{k: record[k] for k in ("width", "height", "name", "h3_request", "video_warning") if k in record}}
+            output={"url": record["url"], "kind": kind, **{k: record[k] for k in ("width", "height", "name", "h3_request", "video_warning", "output_format", "mime", "animated") if k in record}}
             summary=result.get("request_summary") or {}
             if kind=="video" and summary.get("model") in ("MiniMax-H3", "MiniMax-H3-Max"):
                 metadata=(result.get("video_metadata") or [])
@@ -371,10 +394,10 @@ def create_host(module, canvas_ops):
                 size = image_size(settings, cap)
                 # Ext accepts a closed ratio enum. Other adapters derive their
                 # ratio from exact-ratio pixel dimensions (never rounded dimensions).
-                if flag("is_apimart_provider", p) and str(spec["model"]).lower() == "gpt-image-2.5-ext":
+                if flag("is_apimart_provider", p) and str(spec["model"]).lower() in ("gpt-image-2.5-ext", "gpt-image-2.6-ext"):
                     size = settings.get("ratio", "1:1")
                 body = {"provider_id": spec["provider_id"], "model": spec["model"], "prompt": spec["prompt"], "n": 1, "size": size, "aspect_ratio": settings.get("ratio", ""), "resolution": settings.get("resolution", ""), "reference_images": refs}
-                for key in ("quality", "background", "version", "output_format", "output_compression"):
+                for key in ("quality", "background", "version", "output_format", "output_compression", "complexity", "svg"):
                     if key in settings:
                         if key not in cap["settings"]:
                             if settings[key] in (None, "", "auto"):
@@ -408,6 +431,11 @@ def create_host(module, canvas_ops):
             return {"status": "unknown"}
         async with m.httpx.AsyncClient(timeout=getattr(m, "AI_REQUEST_TIMEOUT", 120)) as client:
             if kind == "image":
+                if gpt_image26.is_model(task["model"]) and hasattr(m, 'query_image_task'):
+                    result=await m.query_image_task(m.ImageTaskQueryRequest(task_id=task_id,provider_id=task['provider_id']))
+                    if result.get('status') in ('failed','running'):
+                        return {'status':result['status']}
+                    return outputs_from_result(result,'image')
                 raw = await m.fetch_image_task_payload(client, task_id, p)
                 status = m.image_task_status(raw)
                 if status in m.IMAGE_TASK_FAILED_STATUSES:

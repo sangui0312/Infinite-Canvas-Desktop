@@ -70,6 +70,22 @@ class HostTests(unittest.IsolatedAsyncioTestCase):
     async def observer(self, task_id, metadata):
         self.observed.append((task_id, metadata))
 
+    async def test_gpt26_contract_source_ratio_and_svg_settings(self):
+        self.provider['image_models'].append('gpt-image-2.6-ext')
+        self.module.open_media_image=Image.open
+        cap=self.host['capabilities']('mock','gpt-image-2.6-ext','image')
+        self.assertEqual(cap['resolutions'],['1k'])
+        self.assertEqual(cap['max_references'],16)
+        spec=self.spec(model='gpt-image-2.6-ext',settings={'ratio':'3:4','resolution':'1k','quality':'max','version':'sunburst','complexity':'high','output_format':'png'})
+        await self.host['generate'](spec,self.observer)
+        self.assertEqual((self.calls[-1].size,self.calls[-1].quality,self.calls[-1].complexity),('3:4','max','high'))
+        svg=self.spec(model='gpt-image-2.6-ext',references=[],settings={'ratio':'1:1','resolution':'1k','output_format':'svg','svg':{'model':'gpt-4.1-mini'}})
+        await self.host['generate'](svg,self.observer)
+        self.assertEqual(self.calls[-1].svg,{'model':'gpt-4.1-mini'})
+        for bad in ({'ratio':'1:1','resolution':'2k'},{'ratio':'3:4','output_format':'gif'},{'output_format':'svg'}):
+            with self.assertRaises(HTTPException):
+                await self.host['generate'](self.spec(model='gpt-image-2.6-ext',settings=bad),self.observer)
+
     async def test_registry_metadata_and_real_reference_dimensions(self):
         self.assertEqual(len(self.host["providers"]()), 1)
         self.assertNotIn("api_key", self.host["providers"]()[0])
