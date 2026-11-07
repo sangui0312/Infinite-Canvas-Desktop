@@ -748,6 +748,8 @@ video.node-img { object-fit:cover; background:#0f172a; }
 .loading-skeleton { display:grid; gap:8px; }
 .loading-cell { border-radius:12px; background:linear-gradient(90deg, var(--soft) 0%, var(--card) 50%, var(--soft) 100%); background-size:200% 100%; animation:shimmer 1.5s infinite linear; border:1px solid var(--line); }
 .loading-cell.single { width:260px; height:180px; }
+.agent-output-inactive { animation:none; background:var(--soft); }
+.agent-output-placeholder .jimeng-pending-sub { max-width:100%; overflow-wrap:anywhere; }
 @keyframes shimmer { 0% { background-position:200% 0; } 100% { background-position:-200% 0; } }
 .jimeng-pending-cell { position:relative; display:flex; align-items:center; justify-content:center; }
 .jimeng-pending-overlay { position:absolute; inset:0; display:flex; flex-direction:column; align-items:center; justify-content:center; gap:8px; padding:14px; box-sizing:border-box; text-align:center; }

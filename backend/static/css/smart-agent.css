@@ -12,6 +12,8 @@
 .smart-agent-panel button:disabled,.smart-agent-panel select:disabled { opacity:.5; cursor:not-allowed; }
 .smart-agent-panel :focus-visible,.smart-agent-toggle:focus-visible { outline:2px solid #6366f1; outline-offset:2px; }
 .sa-header,.sa-row,.sa-output { display:flex; align-items:center; justify-content:space-between; gap:8px; }.sa-header h2 {flex:1;}
+.sa-output > span { min-width:0; overflow-wrap:anywhere; }
+.sa-output > button { flex-shrink:0; }
 .sa-controls { display:grid; grid-template-columns:minmax(0,1fr) minmax(0,1fr); gap:6px; }.sa-controls select {width:100%;min-width:0;}
 .sa-refs { display:flex; flex-wrap:wrap; gap:5px; }.sa-ref { display:flex; max-width:100%; }.sa-ref button:first-child {overflow:hidden;text-overflow:ellipsis;white-space:nowrap;max-width:300px;}.sa-ref button {padding:4px 7px;min-height:30px;}
 .sa-muted,.sa-generation { color:var(--muted,#64748b); font-size:11px; }.sa-generation summary {cursor:pointer;}.sa-generation pre,.sa-params {white-space:pre-wrap;overflow-wrap:anywhere;font:11px/1.5 ui-monospace,monospace;margin:6px 0;max-height:180px;overflow:auto;}

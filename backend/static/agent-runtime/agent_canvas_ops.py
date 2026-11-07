@@ -1,17 +1,40 @@
 """Atomic, reversible Agent edits to the existing canvas JSON format."""
 import copy
 import hashlib
+import html
 import json
 import math
 import os
+import re
 import tempfile
 import time
+from urllib.parse import unquote, urlsplit
 
 from fastapi import HTTPException
 
 
 def fingerprint(value):
     return hashlib.sha256(json.dumps(value, sort_keys=True, ensure_ascii=False, separators=(",", ":")).encode()).hexdigest()
+
+
+def named_agent_outputs(outputs, title):
+    """Use the approved step title for display and retain the upstream filename."""
+    result = copy.deepcopy(outputs)
+    stem = re.sub(r'[\\/:*?"<>|\x00-\x1f\x7f]', '_', str(title or 'Agent 图片')).strip(' .')[:160]
+    stem = re.sub(r'\.(png|jpe?g|webp|gif|svg|bmp|avif|tiff?)$', '', stem, flags=re.I).strip(' .') or 'Agent 图片'
+    if re.fullmatch(r'(CON|PRN|AUX|NUL|COM[1-9]|LPT[1-9])', stem.split('.', 1)[0], re.I):
+        stem = '_' + stem
+    images = [item for item in result if item.get('kind', 'image') == 'image']
+    for index, item in enumerate(images, 1):
+        original = str(item.get('original_name') or item.get('name') or unquote(urlsplit(item.get('url', '')).path).rsplit('/', 1)[-1])
+        original = original.replace('\\', '/').rsplit('/', 1)[-1]
+        ext = os.path.splitext(unquote(urlsplit(item.get('url', '')).path))[1].lower()
+        if ext not in ('.png', '.jpg', '.jpeg', '.webp', '.gif', '.svg', '.bmp', '.avif', '.tif', '.tiff'):
+            output_format = str(item.get('output_format') or os.path.splitext(original)[1].lstrip('.') or 'png').lower()
+            ext = '.' + output_format if output_format in ('png', 'jpeg', 'jpg', 'webp', 'svg', 'gif', 'bmp', 'avif', 'tif', 'tiff') else '.png'
+        name = stem + (f'_{index:02}' if len(images) > 1 else '') + ext
+        item.update(name=name, agent_name=name, original_name=original or 'image' + ext)
+    return result
 
 
 def undo_node_state(node):
@@ -139,7 +162,32 @@ class CanvasOperations:
                     pending.extend(item["to"] for item in edges if item.get("from") == current and item.get("kind", "flow") == "flow")
             edges.append({"from": source, "to": target, "kind": edge_kind})
 
-        if kind == "create_outputs":
+        if kind == "reserve_output":
+            x, y = point()
+            ratio = str(op.get("ratio", "1:1")).split(":")
+            try:
+                aspect = float(ratio[0]) / float(ratio[1])
+                if not math.isfinite(aspect) or aspect <= 0:
+                    raise ValueError()
+            except (ValueError, IndexError, ZeroDivisionError):
+                aspect = 1
+            width = min(520, 440 * aspect)
+            height = width / aspect
+            node_id = f"agent_{stable}_0"
+            if node_id in by_id:
+                raise HTTPException(409, "目标节点编号冲突")
+            nodes.append({"id": node_id, "type": "smart-image", "title": op["title"],
+                          "x": x, "y": y, "w": max(72, round(width)), "h": max(72, round(height)),
+                          "scale": 2, "images": [], "queued": True, "pending": 0,
+                          "agentStatus": "pending", "agentRunId": op["run_id"], "agentStepId": op["step_id"],
+                          "runSettings": copy.deepcopy(canvas.get("settings") or {}),
+                          "promptDraftHtml": html.escape(op.get("prompt", "")).replace("\n", "<br>"), "promptDraftText": op.get("prompt", ""),
+                          "created_at": int(time.time() * 1000)})
+            by_id[node_id] = nodes[-1]
+            for source in op.get("source_node_ids", []):
+                if source in by_id:
+                    edge(source, node_id)
+        elif kind == "create_outputs":
             outputs = op.get("outputs", [])
             if not outputs or len(outputs) > 100:
                 raise HTTPException(400, "没有可交付的成果")
@@ -149,7 +197,7 @@ class CanvasOperations:
                 url = item.get("url", "")
                 if not isinstance(url, str) or not url.startswith(("/assets/", "/output/", "/api/storage-files/")):
                     raise HTTPException(400, "交付成果必须是已保存的本地素材")
-                image = {key: item[key] for key in ("url", "kind", "width", "height", "name", "h3_request", "video_warning", "output_format", "mime", "animated") if key in item}
+                image = {key: item[key] for key in ("url", "kind", "width", "height", "name", "agent_name", "original_name", "h3_request", "video_warning", "output_format", "mime", "animated") if key in item}
                 node_id = f"agent_{stable}_{index}"
                 if node_id in by_id:
                     raise HTTPException(409, "目标节点编号冲突")
@@ -198,6 +246,106 @@ class CanvasOperations:
                 node["x"], node["y"] = x + index % columns * 380, y + index // columns * 380
         else:
             raise HTTPException(400, "未开放此画布操作")
+
+    def reserve_output(self, canvas_id, operation_id, operation):
+        return self.apply(canvas_id, operation_id, {**operation, "type": "reserve_output"})
+
+    def update_output(self, canvas_id, operation_id, state, outputs=None, error="", started_at=0):
+        """Advance owned generation fields while retaining manual layout and edits."""
+        with self.lock:
+            canvas = self.read(canvas_id)
+            receipt = canvas.get("agent_operation_receipts", {}).get(operation_id)
+            if not receipt or receipt.get("undone"):
+                raise HTTPException(409, "生成节点已撤销，请保留成果后手动处理")
+            by_id = {node["id"]: node for node in canvas.get("nodes", [])}
+            node_id = receipt["created_ids"][0]
+            node = by_id.get(node_id)
+            if not node:
+                raise HTTPException(409, "生成节点已删除，成果已保留，可从任务记录查看")
+            if receipt.get("outputs_committed"):
+                return {"canvas": canvas, "node_ids": receipt["node_ids"], "operation_id": operation_id}
+            if (state == "submitting" or outputs is not None) and node.get("images", []) != receipt["after"][node_id].get("images", []):
+                raise HTTPException(409, "生成节点的素材已被编辑，请先处理手动修改")
+            before = copy.deepcopy(canvas)
+            active = state in ("submitting", "waiting", "generated", "delivering")
+            updates = {"agentStatus": state, "agentError": str(error or "")[:500],
+                       "pending": 1 if active else 0, "queued": state == "pending", "running": active}
+            if started_at:
+                updates.update(runStartedAt=int(started_at), runTimerHidden=False)
+            if active:
+                updates.update(runFinishedAt=0, runElapsedMs=0)
+            elif node.get("runStartedAt"):
+                finished = int(node.get("runFinishedAt") or time.time() * 1000)
+                updates.update(runFinishedAt=finished, runElapsedMs=max(0, finished - node["runStartedAt"]))
+            if outputs is not None:
+                if not outputs or len(outputs) > 100:
+                    raise HTTPException(400, "没有可交付的成果")
+                images = []
+                for item in outputs:
+                    url = item.get("url", "")
+                    if not isinstance(url, str) or not url.startswith(("/assets/", "/output/", "/api/storage-files/")):
+                        raise HTTPException(400, "交付成果必须是已保存的本地素材")
+                    images.append({key: item[key] for key in ("url", "kind", "width", "height", "name", "agent_name", "original_name", "h3_request", "video_warning", "output_format", "mime", "animated") if key in item})
+                finished = int(time.time() * 1000)
+                updates.update(images=images[:1], pending=0, queued=False, running=False, agentStatus="completed", agentError="",
+                               runFinishedAt=finished, runElapsedMs=max(0, finished - int(node.get("runStartedAt") or finished)))
+                natural_w, natural_h = float(images[0].get('width') or 0), float(images[0].get('height') or 0)
+                baseline = receipt['after'][node_id]
+                if natural_w > 0 and natural_h > 0 and all(node.get(key) == baseline.get(key) for key in ('w', 'h')):
+                    fit = min(520 / natural_w, 440 / natural_h)
+                    updates.update(w=max(72, round(natural_w * fit)), h=max(72, round(natural_h * fit)))
+                # Keep extra adapter results as separate nodes under the same reversible receipt.
+                for index, image in enumerate(images[1:], 1):
+                    extra_id = node_id.rsplit("_", 1)[0] + f"_{index}"
+                    if extra_id in by_id:
+                        raise HTTPException(409, "额外成果节点编号冲突")
+                    extra = {**copy.deepcopy(node), **copy.deepcopy(updates), "id": extra_id,
+                             "images": [image], "y": node.get("y", 0) + index * (node.get("h", 440) + 60)}
+                    canvas["nodes"].append(extra)
+                    receipt["created_ids"].append(extra_id)
+                    receipt["node_ids"].append(extra_id)
+                    receipt["before"][extra_id] = None
+                    receipt["after"][extra_id] = copy.deepcopy(extra)
+                    extra_edges = [{**connection, "to": extra_id} for connection in receipt["added_edges"] if connection.get("to") == node_id]
+                    canvas["connections"].extend(extra_edges)
+                    receipt["added_edges"].extend(extra_edges)
+                receipt["outputs_committed"] = True
+            node.update(updates)
+            receipt["after"][node_id].update(copy.deepcopy(updates))
+            if canvas != before:
+                self.save(canvas, expected_revision=canvas.get("revision", 0), _preserve_server=False)
+            return {"canvas": canvas, "node_ids": receipt["node_ids"], "operation_id": operation_id}
+
+    def sync_output_names(self, canvas_id, run_id, step_id, outputs):
+        """Backfill existing Agent media names without overwriting manual renames."""
+        with self.lock:
+            canvas = self.read(canvas_id)
+            by_url = {item['url']: item for item in outputs if item.get('agent_name')}
+            changed = []
+            for node in canvas.get('nodes', []):
+                if node.get('agentRunId') != run_id or node.get('agentStepId') != step_id:
+                    continue
+                for image in node.get('images', []):
+                    output = by_url.get(image.get('url'))
+                    if not output:
+                        continue
+                    values = {key: output[key] for key in ('agent_name', 'original_name')}
+                    original = unquote(urlsplit(image['url']).path).rsplit('/', 1)[-1]
+                    if image.get('name', '') in ('', original, output['original_name']):
+                        values['name'] = output['name']
+                    if all(image.get(key) == value for key, value in values.items()):
+                        continue
+                    image.update(values)
+                    for receipt in canvas.get('agent_operation_receipts', {}).values():
+                        snapshot = receipt.get('after', {}).get(node['id'])
+                        if node['id'] in receipt.get('created_ids', []) and isinstance(snapshot, dict):
+                            for expected in snapshot.get('images', []):
+                                if expected.get('url') == image['url']:
+                                    expected.update(copy.deepcopy(values))
+                    changed.append(node['id'])
+            if changed:
+                self.save(canvas, expected_revision=canvas.get('revision', 0), _preserve_server=False)
+            return {'node_ids': list(dict.fromkeys(changed))}
 
     def undo(self, canvas_id, operation_id):
         with self.lock:

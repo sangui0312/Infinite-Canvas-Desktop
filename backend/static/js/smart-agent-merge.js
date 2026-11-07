@@ -23,7 +23,7 @@
                 continue;
             }
             if(!old){ if(mine&&theirs&&!equal(mine,theirs)) throw new Error('画布节点编号冲突，本地草稿已保留。'); result.nodes.push(clone(mine||theirs)); continue; }
-            if(!mine){ if(theirs&&!equal(old,theirs)) throw new Error('已删除的节点被其他任务编辑，本地草稿已保留。'); continue; }
+            if(!mine){ if(theirs&&!old.agentRunId&&!equal(old,theirs)) throw new Error('已删除的节点被其他任务编辑，本地草稿已保留。'); continue; }
             if(!theirs){ if(!equal(old,mine)) throw new Error('正在编辑的节点已被删除，本地草稿已保留。'); continue; }
             result.nodes.push(mergeFields(old,mine,theirs,mine.title||id));
         }

@@ -491,4 +491,6 @@ def create_host(module, canvas_ops):
     async def undo_operation(canvas_id, operation_id):
         return await _await(canvas_ops.undo(canvas_id, operation_id))
 
-    return {"active_task_registry": getattr(m, "CANVAS_TASKS", None), "data_dir": str(m.DATA_DIR), "providers": providers, "load_canvas": load_canvas, "capabilities": capabilities, "llm": llm, "generate": generate, "query_task": query_task, "apply_operation": apply_operation, "undo_operation": undo_operation, "broadcast": broadcast, "normalize_generation": normalize_for_host, "prepare_settings": prepare_settings}
+    return {"active_task_registry": getattr(m, "CANVAS_TASKS", None), "data_dir": str(m.DATA_DIR), "providers": providers, "load_canvas": load_canvas, "capabilities": capabilities, "llm": llm, "generate": generate, "query_task": query_task, "apply_operation": apply_operation, "undo_operation": undo_operation, "broadcast": broadcast, "normalize_generation": normalize_for_host, "prepare_settings": prepare_settings,
+            "reserve_output": canvas_ops.reserve_output, "update_output": canvas_ops.update_output,
+            "sync_output_names": canvas_ops.sync_output_names}

@@ -18,3 +18,10 @@ test('deleted connections remain deleted with independently appended results',()
     const base=original();base.nodes.push({id:'b'});base.connections=[{from:'a',to:'b'}];const local=copy(base),remote=copy(base);local.connections=[];remote.nodes.push({id:'c'});remote.connections.push({from:'b',to:'c'});
     assert.deepEqual(merge(base,local,remote).connections,[{from:'b',to:'c'}]);
 });
+
+test('manual placeholder deletion survives concurrent generation updates',()=>{
+    const base=original();base.nodes.push({id:'slot',agentRunId:'run',agentStatus:'pending',images:[]});
+    const local=copy(base),remote=copy(base);local.nodes=local.nodes.filter(n=>n.id!=='slot');
+    Object.assign(remote.nodes[1],{agentStatus:'completed',images:[{url:'/output/result.png'}]});
+    assert.deepEqual(merge(base,local,remote).nodes.map(n=>n.id),['a']);
+});

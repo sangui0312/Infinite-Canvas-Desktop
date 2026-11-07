@@ -6,6 +6,7 @@ import json
 import time
 
 from fastapi import HTTPException
+from agent_canvas_ops import named_agent_outputs
 
 from .planning import PlanError, SYSTEM, TOOLS, configured, context_snapshot, models, parse_response, parse_text, validate_plan, validate_settings, legacy_questions
 from .store import Store, encode, uid
@@ -53,6 +54,9 @@ class AgentService:
             return
         self.started = True
         for run in self.runs.values():
+            for step in run.get("steps", []):
+                if step.get("kind") == "image" and step.get("outputs"):
+                    await self._sync_output_names(run, step)
             if run["status"] == "planning":
                 run["status"], run["error"] = "interrupted", "规划被中断，请重新发送需求。"
                 self.store.save(run, "needs_attention")
@@ -64,6 +68,9 @@ class AgentService:
                         if not step.get("upstream_id"):
                             step["error"] = "提交是否受理未知，禁止自动重发。"
                 self.store.save(run, "needs_attention")
+            if any(s.get("placeholder_operation_id") for s in run.get("steps", [])):
+                for step in run["steps"]:
+                    await self._sync_output(run, step)
             if any(s["status"] in ("waiting", "delivery_failed", "delivering") or (s["status"] == "generated") for s in run.get("steps", [])):
                 self._spawn("recover:" + run["id"], self._recover(run))
 
@@ -125,7 +132,7 @@ class AgentService:
             actions.append("retry")
         if status not in ("running", "stopping") and any(s["status"] in ("generated", "delivery_failed", "delivering") for s in run["steps"]):
             actions.append("repair_delivery")
-        if any(s.get("delivery_status") == "delivered" for s in run["steps"]):
+        if any(s.get("delivery_status") == "delivered" or (s.get("placeholder_operation_id") and not s.get("undone")) for s in run["steps"]):
             actions.append("undo")
         result["actions"] = actions
         return result
@@ -291,7 +298,19 @@ class AgentService:
     @staticmethod
     def _planned_steps(plan, previous=None):
         existing = {s["id"]: s for s in previous or []}
-        return [copy.deepcopy(existing[s["id"]]) if existing.get(s["id"], {}).get("status") not in (None, "pending", "blocked") else {**copy.deepcopy(s), "status": "blocked" if s.get("blocked_reason") else "pending", "attempt": 0, "outputs": [], "delivery_status": "pending"} for s in plan["steps"]]
+        steps = []
+        for proposed in plan["steps"]:
+            old = existing.get(proposed["id"], {})
+            if old.get("status") not in (None, "pending", "blocked"):
+                steps.append(copy.deepcopy(old))
+                continue
+            step = {**copy.deepcopy(proposed), "status": "blocked" if proposed.get("blocked_reason") else "pending",
+                    "attempt": 0, "outputs": [], "delivery_status": "pending"}
+            for key in ("placeholder_operation_id", "operation_id", "node_ids"):
+                if key in old:
+                    step[key] = copy.deepcopy(old[key])
+            steps.append(step)
+        return steps
 
     @staticmethod
     def _plan_status(plan, steps=None):
@@ -403,6 +422,8 @@ class AgentService:
                 run["stop_requested"] = True
                 run["status"] = "stopping" if any(s["status"] in ("submitting", "waiting") for s in run["steps"]) else "stopped"
                 self.store.save(run, "stop_requested")
+                for step in run["steps"]:
+                    await self._sync_output(run, step)
             else:
                 if self._canvas_busy(run):
                     raise HTTPException(409, "此画布已有执行中或状态未明的任务，请先处理。")
@@ -426,10 +447,76 @@ class AgentService:
                 run.pop("error", None)
                 run["status"] = "running"
                 self.store.save(run, "run_started")
+                await self._reserve_outputs(run)
                 self._spawn("execute:" + run_id, self._execute(run, delivery_only=action == "repair_delivery"))
             result = self.snapshot(run)
             self.store.action(run_id, request_id, fingerprint, result)
             return result
+
+    async def _reserve_outputs(self, run):
+        if not self.host.get("reserve_output"):
+            return
+        for step in run["steps"]:
+            if step["kind"] not in ("image", "video") or step["status"] != "pending":
+                continue
+            if not step.get("placeholder_operation_id"):
+                operation_id = "agent-" + run["id"] + "-" + step["id"]
+                sources = []
+                for reference in step["references"]:
+                    if reference.get("node_id"):
+                        sources.append(reference["node_id"])
+                    elif reference.get("step_id"):
+                        dependency = next(s for s in run["steps"] if s["id"] == reference["step_id"])
+                        sources.extend(dependency.get("node_ids", []))
+                operation = {"run_id": run["id"], "step_id": step["id"], "title": step["title"],
+                             "prompt": step["prompt"], "ratio": step["settings"].get("ratio", "1:1"),
+                             "source_node_ids": list(dict.fromkeys(sources))}
+                try:
+                    result = await invoke(self.host["reserve_output"], run["canvas_id"], operation_id, operation)
+                    if result.get("undone"):
+                        raise ValueError("Placeholder was undone")
+                    step.update(placeholder_operation_id=operation_id, operation_id=operation_id, node_ids=result["node_ids"])
+                    self.store.save(run, "canvas_updated", {"step_id": step["id"], "node_ids": step["node_ids"]})
+                except Exception:
+                    step["status"], step["error"] = "failed", "创建生成节点失败，尚未提交生成，请重试此步骤。"
+                    self.store.save(run, "needs_attention")
+            await self._sync_output(run, step)
+
+    async def _sync_output_names(self, run, step):
+        outputs = named_agent_outputs(step["outputs"], step["title"])
+        if outputs != step["outputs"]:
+            step["outputs"] = outputs
+            step.pop("names_synced", None)
+            self.store.save(run, "output_names_updated", {"step_id": step["id"]})
+        if not step.get("names_synced") and not step.get("undone") and step.get("delivery_status") == "delivered" and self.host.get("sync_output_names"):
+            try:
+                await invoke(self.host["sync_output_names"], run["canvas_id"], run["id"], step["id"], outputs)
+                step["names_synced"] = True
+                self.store.save(run, "output_names_updated", {"step_id": step["id"]})
+                await invoke(self.host["broadcast"], run["canvas_id"])
+            except Exception:
+                pass  # Keep the stored result; retry this metadata sync on the next start.
+
+    async def _sync_output(self, run, step, outputs=None):
+        operation_id = step.get("placeholder_operation_id")
+        if not operation_id or not self.host.get("update_output") or step.get("undone"):
+            return True
+        state = step["status"]
+        if state == "pending" and (run["stop_requested"] or run["status"] != "running"):
+            state = "stopped"
+        try:
+            result = await invoke(self.host["update_output"], run["canvas_id"], operation_id, state,
+                                  outputs=outputs, error=step.get("error", ""), started_at=step.get("started_at", 0))
+            step["node_ids"] = result["node_ids"]
+            step.pop("canvas_error", None)
+            try:
+                await invoke(self.host["broadcast"], run["canvas_id"])
+            except Exception:
+                pass
+            return True
+        except Exception:
+            step["canvas_error"] = "生成节点已删除、撤销或编辑，请从任务记录保留已有成果。"
+            return False
 
     async def _deliver(self, run, step):
         # Generation overlaps, while canvas mutations remain ordered per canvas.
@@ -437,7 +524,7 @@ class AgentService:
             await self._deliver_unlocked(run, step)
 
     async def _deliver_unlocked(self, run, step):
-        if step.get("delivery_status") == "delivered":
+        if step.get("delivery_status") == "delivered" or step.get("undone"):
             return
         operation_id = step.setdefault("operation_id", "agent-" + run["id"] + "-" + step["id"])
         if step["kind"] in ("image", "video"):
@@ -449,9 +536,14 @@ class AgentService:
         step["prepared_operation"] = operation
         self.store.save(run, "delivery_prepared", {"step_id": step["id"], "operation_id": operation_id})
         try:
-            result = await invoke(self.host["apply_operation"], run["canvas_id"], operation_id, operation)
-            step["node_ids"] = result.get("node_ids", [])
+            if step.get("placeholder_operation_id"):
+                if not await self._sync_output(run, step, outputs=step["outputs"]):
+                    raise ValueError("Placeholder changed")
+            else:
+                result = await invoke(self.host["apply_operation"], run["canvas_id"], operation_id, operation)
+                step["node_ids"] = result.get("node_ids", [])
             step["delivery_status"], step["status"] = "delivered", "completed"
+            step["names_synced"] = True
             step.pop("error", None)
             self.store.save(run, "canvas_updated", {"step_id": step["id"], "operation_id": operation_id, "node_ids": step["node_ids"]})
             try:
@@ -461,6 +553,7 @@ class AgentService:
         except Exception:
             step["delivery_status"], step["status"] = "failed", "delivery_failed"
             step["error"] = "成果已保留，画布交付失败或发生冲突；可重试交付。"
+            await self._sync_output(run, step)
             self.store.save(run, "needs_attention", {"step_id": step["id"], "error": step["error"]})
 
     def _record_result(self, run, step, result):
@@ -471,11 +564,11 @@ class AgentService:
             for index, item in enumerate(result["outputs"]):
                 if not isinstance(item, dict) or not isinstance(item.get("url"), str) or not item["url"]:
                     continue
-                outputs.append({"id": step["task_id"] + f"-{index}", "url": item["url"], "kind": item.get("kind", step["kind"]), **{k: item[k] for k in ("width", "height", "name", "h3_request", "video_warning", "output_format", "mime", "animated") if k in item}})
+                outputs.append({"id": step["task_id"] + f"-{index}", "url": item["url"], "kind": item.get("kind", step["kind"]), **{k: item[k] for k in ("width", "height", "name", "agent_name", "original_name", "h3_request", "video_warning", "output_format", "mime", "animated") if k in item}})
             if not outputs:
                 step["status"], step["error"] = "unknown", "未取得可用成果，禁止自动重发。"
             else:
-                step["outputs"], step["status"] = outputs, "generated"
+                step["outputs"], step["status"] = named_agent_outputs(outputs, step["title"]) if step["kind"] == "image" else outputs, "generated"
         elif result.get("status") == "failed":
             step["status"], step["error"] = "failed", "上游已明确报告生成失败，可仅重试此步骤。"
         elif result.get("status") in ("running", "pending", "submitted") and step.get("upstream_id"):
@@ -488,6 +581,7 @@ class AgentService:
         try:
             result = await invoke(self.host["query_task"], copy.deepcopy(step))
             self._record_result(run, step, result)
+            await self._sync_output(run, step)
             if step["status"] == "generated":
                 await self._deliver(run, step)
         except asyncio.CancelledError:
@@ -495,6 +589,7 @@ class AgentService:
         except Exception:
             step["status"], step["error"] = "waiting", "查询暂未完成，保留同一上游任务继续查询。"
             self.store.save(run, "needs_attention", {"step_id": step["id"], "status": "waiting"})
+            await self._sync_output(run, step)
 
     async def _recover(self, run):
         while not self.closing:
@@ -506,6 +601,8 @@ class AgentService:
                 elif step["status"] in ("generated", "delivery_failed", "delivering"):
                     await self._deliver(run, step)
             self._finish(run, recovered=True)
+            for step in run["steps"]:
+                await self._sync_output(run, step)
             if not waiting:
                 return
             await asyncio.sleep(float(self.host.get("poll_interval", 3)))
@@ -567,10 +664,15 @@ class AgentService:
         step["attempt"] += 1
         step["task_id"] = f'{run["id"]}:{step["id"]}:{step["attempt"]}'
         step["status"] = "submitting"
+        step["started_at"] = int(time.time() * 1000)
         step["resolved_references"] = references
         spec = {"prompt": step["prompt"], "provider_id": step["provider_id"], "model": step["model"], "kind": step["kind"], "references": references, "settings": copy.deepcopy(step["settings"]), "request_id": step["task_id"]}
         step["submitted_spec"] = spec
         self.store.save(run, "generation_submitting", {"step_id": step["id"], "task_id": step["task_id"]})
+        if not await self._sync_output(run, step):
+            step["status"], step["error"] = "failed", "生成节点已删除或撤销，尚未提交生成。"
+            self.store.save(run, "needs_attention")
+            return
 
         async def submitted(upstream_id, metadata=None):
             if not upstream_id:
@@ -580,6 +682,7 @@ class AgentService:
             step["recovery"] = {k: v for k, v in (metadata or {}).items() if k in ("query_kind", "submitted_at", "api_kind") and isinstance(v, (str, int, float, bool))}
             step["status"] = "waiting"
             self.store.save(run, "generation_submitted", {"step_id": step["id"], "status": "waiting"})
+            await self._sync_output(run, step)
 
         try:
             result = await invoke(self.host["generate"], spec, submitted)
@@ -595,6 +698,7 @@ class AgentService:
                 step["status"] = "waiting" if step.get("upstream_id") else "unknown"
                 step["error"] = "连接中断，已保留任务身份；禁止重复提交。"
             self.store.save(run, "needs_attention", {"step_id": step["id"], "status": step["status"]})
+        await self._sync_output(run, step)
         if step["status"] == "generated":
             await self._deliver(run, step)
         # A known remote job occupies its slot until it settles. Never POST it again.
@@ -611,6 +715,8 @@ class AgentService:
                     if step["status"] in ("generated", "delivery_failed", "delivering"):
                         await self._deliver(run, step)
                 self._finish(run)
+                for step in run["steps"]:
+                    await self._sync_output(run, step)
                 return
             limit = (run.get("plan") or {}).get("image_concurrency", run.get("image_concurrency", 2))
             limit = max(1, min(4, int(limit)))
@@ -650,6 +756,8 @@ class AgentService:
                         step["error"] = "任务中断，已保留现有状态；禁止重复提交。"
                         self.store.save(run, "needs_attention")
             self._finish(run)
+            for step in run["steps"]:
+                await self._sync_output(run, step)
         except asyncio.CancelledError:
             raise
         except Exception:
@@ -674,7 +782,7 @@ class AgentService:
                 return prior[1]
             if run["status"] in ("running", "stopping", "planning"):
                 raise HTTPException(409, "请先停止任务再撤销。")
-            steps = [s for s in reversed(run["steps"]) if s.get("delivery_status") == "delivered" and (not body.get("operation_id") or s.get("operation_id") == body["operation_id"])]
+            steps = [s for s in reversed(run["steps"]) if not s.get("undone") and (s.get("delivery_status") == "delivered" or s.get("placeholder_operation_id")) and (not body.get("operation_id") or s.get("operation_id") == body["operation_id"])]
             if not steps:
                 raise HTTPException(409, "没有可撤销的本轮操作。")
             results = []

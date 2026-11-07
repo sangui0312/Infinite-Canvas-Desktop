@@ -14,6 +14,8 @@ RUNTIME.mkdir(exist_ok=True)
 
 def main():
     mixed = '--mixed' in sys.argv
+    placeholders = '--placeholders' in sys.argv
+    generation_release = asyncio.Event()
     with tempfile.TemporaryDirectory(prefix="integration-", dir=RUNTIME) as data:
         os.environ["IC_DESKTOP_DATA_DIR"] = data
         os.environ["PYTHONDONTWRITEBYTECODE"] = "1"
@@ -32,7 +34,8 @@ def main():
                 raise RuntimeError("Integration test forbids external network")
             return original_connect(sock, address)
         socket.socket.connect = loopback_connect
-        sys.path.insert(0, str(ROOT / "backend"))
+        program = ROOT / 'dist/win-unpacked/resources/backend' if '--packaged' in sys.argv else ROOT / 'backend'
+        sys.path.insert(0, str(program))
         import main as m
         from PIL import Image
         import uvicorn
@@ -58,7 +61,7 @@ def main():
                 return {'text':json.dumps({'status':'needs_input','summary':'需要确认以下信息，已确定的内容会保留。','questions':questions,'steps':[]})}
             if '--questions' in sys.argv and calls['llm'] == 3:
                 assert '商用烘焙工作台' in messages[-1]['content']
-            steps = [{"id": "poster", "title": "测试海报", "kind": "image", "prompt": "fixture blue poster", "provider_id": "apimart", "model": "gpt-image-2", "references": [], "settings": {}, "count": 3}]
+            steps = [{"id": "poster", "title": "测试海报", "kind": "image", "prompt": "fixture blue poster", "provider_id": "apimart", "model": "gpt-image-2", "references": [], "settings": {}, "count": 8 if placeholders else 3}]
             if mixed:
                 steps = [{'id':f'img-{i}', 'title':f'套图 {i+1}', 'kind':'image', 'provider_id':'apimart', 'model':'gpt-image-2', 'prompt':f'fixture scene {i}', 'references':[], 'settings':{'ratio':'1:1' if i<8 else '3:4','resolution':'4k' if i<8 else '2k'}} for i in range(20)]
                 steps.append({'id':'film','title':'15秒视频','kind':'video','provider_id':'apimart','model':'minimax-h3','prompt':'fixture video','references':[], 'settings':{'ratio':'9:16','resolution':'768p','duration':15}})
@@ -73,6 +76,9 @@ def main():
                 assert payload.aspect_ratio in ('1:1','3:4') and payload.resolution in ('2k','4k')
             else:
                 assert payload.aspect_ratio == "9:16" and payload.resolution == "2k"
+            if placeholders:
+                await m.observe_agent_submission(f'fixture-{index}', 'image')
+                await generation_release.wait()
             await asyncio.sleep(.25 if '--progress' in sys.argv else .06 if mixed else 1)
             calls['active'] -= 1
             name = f'integration-result-{index}.png'
@@ -93,6 +99,11 @@ def main():
             m.canvas_video = fake_video
         config = uvicorn.Config(m.app, host="127.0.0.1", port=0, log_level="error", ws_ping_interval=None)
         server = uvicorn.Server(config)
+        @m.app.post("/__agent_smoke/release")
+        async def release_generation():
+            generation_release.set()
+            return {"released": True}
+
         @m.app.get("/__agent_smoke/status")
         async def status():
             return {"calls": calls, "canvas": m.load_canvas("smoke")}

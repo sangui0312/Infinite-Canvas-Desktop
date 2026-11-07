@@ -4837,7 +4837,7 @@ function clearCompletedSourceBusyStates(){
 function hideCompletedRunTimers(){
     let changed = false;
     (nodes || []).forEach(node => {
-        if(!node || node.type === 'smart-prompt') return;
+        if(!node || node.type === 'smart-prompt' || node.agentStatus) return;
         if(node.pending || node.running || node.jimengPending || !node.runFinishedAt || node.runTimerHidden) return;
         node.runTimerHidden = true;
         changed = true;
@@ -5580,6 +5580,7 @@ async function loadCanvas(){
           nodes.filter(n => n.type === 'smart-loop').forEach(n => autoAdjustSmartLoopCountFromImages(n));
         nodes.forEach(n => {
             if(n.type === 'smart-minimax') n.timelinePlaying = false;
+            if(n.agentRunId && n.agentStatus) return;
             const pendingTasks = smartPendingTasks(n);
             if(pendingTasks.length){
                 n.pending = Math.max(pendingTasks.length, Number(n.pending || 0) || pendingTasks.length);
@@ -6534,7 +6535,7 @@ function extensionForMediaItem(item, fallback='.png'){
 }
 function downloadNameForMediaItem(item, fallbackPrefix='canvas-output'){
     const localName = fileNameFromUrl(item?.url || '');
-    const preferred = localName || item?.name || '';
+    const preferred = item?.agent_name ? (item.name || item.agent_name) : (localName || item?.name || '');
     const ext = extensionForMediaItem(item);
     const randomName = `${fallbackPrefix}_${Date.now()}_${Math.random().toString(16).slice(2, 8)}${ext}`;
     let name = safeExportFileName(preferred || randomName, randomName);
@@ -6542,13 +6543,23 @@ function downloadNameForMediaItem(item, fallbackPrefix='canvas-output'){
     return name;
 }
 let activeSmartDownloadModeCleanup = null;
-function chooseSmartDownloadMode(){
+function chooseSmartDownloadMode(items=[]){
     activeSmartDownloadModeCleanup?.(null);
+    const hasAgentNames = items.some(item => item?.agent_name);
     return new Promise(resolve => {
         const backdrop = document.createElement('div');
         backdrop.setAttribute('role', 'presentation');
         backdrop.style.cssText = 'position:fixed;inset:0;z-index:10050;display:flex;align-items:center;justify-content:center;padding:18px;background:rgba(15,23,42,.42);';
-        backdrop.innerHTML = `<div role="dialog" aria-modal="true" aria-label="选择下载方式" style="width:min(320px,100%);padding:20px;border:1px solid #dbe4f0;border-radius:14px;background:#fff;box-shadow:0 22px 60px rgba(15,23,42,.26);font-family:inherit"><div style="margin-bottom:8px;font-size:16px;font-weight:700;color:#172033">选择下载方式</div><div style="margin-bottom:16px;font-size:13px;color:#64748b">原名下载按输入图片名称保存；重命名下载可设置批次名称。</div><div style="display:grid;gap:8px"><button type="button" data-smart-download-mode="original" style="min-height:38px;border:0;border-radius:9px;background:#111827;color:#fff;font:inherit;font-weight:600;cursor:pointer">原名下载</button><button type="button" data-smart-download-mode="rename" style="min-height:38px;border:1px solid #cbd5e1;border-radius:9px;background:#fff;color:#172033;font:inherit;font-weight:600;cursor:pointer">重命名下载</button><button type="button" data-smart-download-mode="cancel" style="min-height:34px;border:0;border-radius:9px;background:transparent;color:#64748b;font:inherit;cursor:pointer">取消</button></div></div>`;
+        backdrop.innerHTML = `<div role="dialog" aria-modal="true" aria-label="选择下载方式" style="width:min(320px,100%);padding:20px;border:1px solid var(--line,#dbe4f0);border-radius:14px;background:var(--card,#fff);color:var(--text,#172033);box-shadow:0 22px 60px rgba(15,23,42,.26);font-family:inherit">
+            <div style="margin-bottom:8px;font-size:16px;font-weight:700">选择下载方式</div>
+            <div style="margin-bottom:16px;font-size:13px;color:var(--muted,#64748b)">${hasAgentNames ? '选择 Agent 命名、生成时的原始文件名，或设置自定义名称。' : '原名下载按输入图片名称保存；重命名下载可设置批次名称。'}</div>
+            <div style="display:grid;gap:8px">
+                ${hasAgentNames ? '<button type="button" data-smart-download-mode="agent" style="min-height:38px;border:0;border-radius:9px;background:#111827;color:#fff;font:inherit;font-weight:600;cursor:pointer">Agent 命名</button>' : ''}
+                <button type="button" data-smart-download-mode="original" style="min-height:38px;border:1px solid var(--line,#cbd5e1);border-radius:9px;background:var(--soft,#f1f5f9);color:inherit;font:inherit;font-weight:600;cursor:pointer">${hasAgentNames ? '原始文件名' : '原名下载'}</button>
+                <button type="button" data-smart-download-mode="rename" style="min-height:38px;border:1px solid var(--line,#cbd5e1);border-radius:9px;background:var(--card,#fff);color:inherit;font:inherit;font-weight:600;cursor:pointer">重命名下载</button>
+                <button type="button" data-smart-download-mode="cancel" style="min-height:34px;border:0;border-radius:9px;background:transparent;color:var(--muted,#64748b);font:inherit;cursor:pointer">取消</button>
+            </div>
+        </div>`;
         const onKeyDown = event => {
             if(event.key === 'Escape') finish(null);
         };
@@ -6571,7 +6582,7 @@ function chooseSmartDownloadMode(){
         });
         document.addEventListener('keydown', onKeyDown, true);
         document.body.appendChild(backdrop);
-        backdrop.querySelector('[data-smart-download-mode="original"]')?.focus();
+        backdrop.querySelector(`[data-smart-download-mode="${hasAgentNames ? 'agent' : 'original'}"]`)?.focus();
     });
 }
 let activeSmartCompressionFormatCleanup = null;
@@ -6642,7 +6653,7 @@ function reserveSmartSourceResultIndexes(sourceName, count=1){
     return indexes;
 }
 function smartOriginalDownloadName(item, fallback='image'){
-    const sourceName = String(item?.sourceName || item?.name || fileNameFromUrl(item?.url || '') || fallback).trim();
+    const sourceName = String(item?.agent_name ? (item.original_name || fileNameFromUrl(item.url || '') || fallback) : (item?.sourceName || item?.name || fileNameFromUrl(item?.url || '') || fallback)).trim();
     const safeName = safeExportFileName(sourceName, fallback);
     const stem = safeName.replace(/\.[^.]+$/, '') || fallback;
     const ext = extensionForMediaItem({url:item?.url || '', kind:item?.kind || 'image'});
@@ -6666,7 +6677,9 @@ function withSmartOriginalDownloadNames(items, options={}){
     const used = new Set();
     const compressed = Boolean(options.compressed);
     return (items || []).map((item, index) => {
-        const baseName = smartOriginalDownloadName(item, `image-${index + 1}`);
+        const baseName = options.naming === 'agent' && item?.agent_name
+            ? safeExportFileName(item.agent_name, `image-${index + 1}${extensionForMediaItem(item)}`)
+            : smartOriginalDownloadName(item, `image-${index + 1}`);
         const name = compressed ? `${baseName.replace(/\.[^.]+$/, '')}_电商压缩.jpg` : baseName;
         return {...item, name:uniqueSmartDownloadName(name, used)};
     });
@@ -6690,7 +6703,7 @@ async function smartPreparedDownloadItems(items, options={}){
     if(!list.length) return null;
     const compressFormat = options.compressed ? await chooseSmartCompressionFormat() : 'auto';
     if(options.compressed && !compressFormat) return null;
-    const mode = await chooseSmartDownloadMode();
+    const mode = await chooseSmartDownloadMode(list);
     if(!mode) return null;
     if(mode === 'rename'){
         const base = smartAskBatchBaseName();
@@ -6700,7 +6713,7 @@ async function smartPreparedDownloadItems(items, options={}){
             return {base, items:named, compressFormat};
         }
     }
-    return {base:'', items:withSmartOriginalDownloadNames(list, options), compressFormat};
+    return {base:'', items:withSmartOriginalDownloadNames(list, {...options, naming:mode}), compressFormat};
 }
 async function downloadPreviewImage(){
     const node = nodes.find(n => n.id === previewNavState.nodeId);
@@ -6752,6 +6765,7 @@ async function downloadSmartImageWithChoice(item, compressed=false){
 }
 function downloadPreviewFile(item){
     if(!item?.url) return;
+    if(item.agent_name && mediaKindForItem(item) === 'image') return downloadSmartImageWithChoice(item);
     const name = downloadNameForMediaItem(item, 'output');
     const link = document.createElement('a');
     link.href = `/api/download-output?url=${encodeURIComponent(item.url)}&name=${encodeURIComponent(name)}`;
@@ -8006,6 +8020,9 @@ function nodeBodyHtml(node, layout){
     if(node.type === 'smart-prompt') return promptNodeBodyHtml(node);
     if(node.type === 'smart-loop') return smartLoopBodyHtml(node);
     const imgs = (node.images || []).map(imageForDisplay);
+    if(node.agentRunId && node.agentStatus && node.agentStatus !== 'completed' && imgs.length === 0){
+        return agentOutputBodyHtml(node, layout);
+    }
     if(node.jimengPending && node.jimengPending.submitId && imgs.length === 0){
         return jimengPendingBodyHtml(node, layout);
     }
@@ -8033,6 +8050,18 @@ function nodeBodyHtml(node, layout){
         <span class="upload-node-main"><i data-lucide="upload-cloud"></i></span>
         <span class="upload-node-title">${escapeHtml(tr('smart.createImportNode'))}</span>
         <span class="upload-node-sub">拖拽 / 粘贴 / 点击上传</span>
+    </div>`;
+}
+function agentOutputBodyHtml(node, layout){
+    const labels = {pending:'等待执行', submitting:'正在提交', waiting:'生成中', generated:'生成完成，正在放入画布', delivering:'正在放入画布',
+        failed:'生成失败', delivery_failed:'成果待交付', unknown:'提交状态待确认', stopped:'已停止，尚未执行', blocked:'等待前置条件'};
+    const active = ['submitting','waiting','generated','delivering'].includes(node.agentStatus);
+    return `<div class="jimeng-pending-cell loading-cell single agent-output-placeholder ${active ? '' : 'agent-output-inactive'}" style="width:${layout.width}px;height:${layout.height}px" data-agent-state="${escapeAttr(node.agentStatus)}">
+        <div class="jimeng-pending-overlay" role="status">
+            <div class="jimeng-pending-text">${escapeHtml(labels[node.agentStatus] || '等待恢复任务')}</div>
+            <div class="jimeng-pending-sub">${escapeHtml(node.agentError || node.title || '')}</div>
+            <button class="jimeng-pending-query" type="button" data-agent-task="${escapeAttr(node.agentRunId)}">查看任务</button>
+        </div>
     </div>`;
 }
 function jimengPendingBodyHtml(node, layout){
@@ -8472,7 +8501,7 @@ function render(){
         .sort((a, b) => (isSmartGroupNode(a) ? 0 : 1) - (isSmartGroupNode(b) ? 0 : 1))
         .map(node => {
         const imgs = node.images || [];
-        const title = node.type === 'smart-group' ? (node.title === '万能分组' ? '智能分组' : (node.title || '智能分组')) : node.type === 'smart-prompt' ? 'Prompt' : node.type === 'smart-loop' ? 'Loop' : node.type === 'smart-minimax' ? 'MiniMax H3' : node.type === 'smart-director' ? '3D 导演台' : (imgs.length > 1 ? 'Group' : imgs.length ? 'Image' : escapeHtml(tr('smart.createImportNode')));
+        const title = node.agentRunId && node.agentStatus ? escapeHtml(node.title || 'Agent 任务') : node.type === 'smart-group' ? (node.title === '万能分组' ? '智能分组' : (node.title || '智能分组')) : node.type === 'smart-prompt' ? 'Prompt' : node.type === 'smart-loop' ? 'Loop' : node.type === 'smart-minimax' ? 'MiniMax H3' : node.type === 'smart-director' ? '3D 导演台' : (imgs.length > 1 ? 'Group' : imgs.length ? 'Image' : escapeHtml(tr('smart.createImportNode')));
         const scale = nodeScale(node);
         const layout = imageLayout(imgs, scale, node);
         const isPrompt = node.type === 'smart-prompt';
@@ -8484,7 +8513,7 @@ function render(){
         const isImageNode = node.type === 'smart-image' || !node.type;
         const isJimengPending = Boolean(node.jimengPending && node.jimengPending.submitId && imgs.length === 0);
         const isQueued = Boolean(node.queued && imgs.length === 0 && !node.pending && !isJimengPending);
-        const isEmpty = isImageNode && imgs.length === 0 && !node.pending && !isQueued && !isJimengPending;
+        const isEmpty = isImageNode && imgs.length === 0 && !node.pending && !isQueued && !isJimengPending && !node.agentStatus;
         const isHistory = isHistoryGroupNode(node);
         const isGroup = isImageNode && imgs.length > 1;
         const isPending = ((node.pending || isQueued || isJimengPending) && imgs.length === 0);
@@ -9786,6 +9815,13 @@ function bindNodeEvents(){
             btn.addEventListener('click', e => {
                 e.preventDefault(); e.stopPropagation();
                 queryJimengNow(btn.dataset.jimengQuery);
+            });
+        });
+        el.querySelectorAll('[data-agent-task]').forEach(btn => {
+            btn.addEventListener('mousedown', e => { e.preventDefault(); e.stopPropagation(); }, true);
+            btn.addEventListener('click', e => {
+                e.preventDefault(); e.stopPropagation();
+                window.dispatchEvent(new CustomEvent('smart-agent-open-run', {detail:{runId:btn.dataset.agentTask, canvasId}}));
             });
         });
         el.querySelectorAll('[data-image-task-query]').forEach(btn => {

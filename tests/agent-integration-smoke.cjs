@@ -1,13 +1,14 @@
 // Actual page + bridge + FastAPI/Agent/host/ops; only upstream inference is fake.
 const {app,BrowserWindow} = require('electron');
-const {spawn} = require('node:child_process');
+const {spawn,spawnSync} = require('node:child_process');
 const fs = require('node:fs');
 const path = require('node:path');
 const assert = require('node:assert/strict');
 const root=path.resolve(__dirname,'..');
 fs.mkdirSync(path.join(root,'.test-data'),{recursive:true});
 app.setPath('userData',fs.mkdtempSync(path.join(root,'.test-data/agent-integration-ui-')));
-const mixed=process.argv.includes('--mixed'), expected=mixed?21:3;
+const mixed=process.argv.includes('--mixed'), placeholders=process.argv.includes('--placeholders'), expected=mixed?21:placeholders?8:3;
+const packaged=process.argv.includes('--packaged');
 const personaManagement=process.argv.includes('--personas');
 const questionMode=process.argv.includes('--questions');
 app.on('window-all-closed',()=>{});
@@ -16,7 +17,8 @@ const delay=ms=>new Promise(resolve=>setTimeout(resolve,ms));
 async function run() {
     const env={PYTHONIOENCODING:'utf-8',PYTHONUTF8:'1',PYTHONDONTWRITEBYTECODE:'1'};
     for(const key of ['SYSTEMROOT','WINDIR','TEMP','TMP','PATH']) if(process.env[key]) env[key]=process.env[key];
-    child=spawn(path.join(root,'backend/python/python.exe'),['-X','utf8',path.join(__dirname,'agent_integration_server.py'),...(mixed?['--mixed']:[]),...(process.argv.includes('--progress')?['--progress']:[]),...(questionMode?['--questions']:[])],{cwd:root,env,windowsHide:true,stdio:['ignore','pipe','pipe']});
+    const program=packaged?path.join(root,'dist/win-unpacked/resources/backend'):path.join(root,'backend');
+    child=spawn(path.join(program,'python/python.exe'),['-X','utf8',path.join(__dirname,'agent_integration_server.py'),...(packaged?['--packaged']:[]),...(mixed?['--mixed']:[]),...(placeholders?['--placeholders']:[]),...(process.argv.includes('--progress')?['--progress']:[]),...(questionMode?['--questions']:[])],{cwd:root,env,windowsHide:true,stdio:['ignore','pipe','pipe']});
     let output='';
     child.stdout.on('data',chunk=>{output=(output+chunk.toString()).slice(-14000);const match=output.match(/AGENT_SMOKE_READY (\d+)/);if(match)base='http://127.0.0.1:'+match[1];});
     child.stderr.on('data',chunk=>{output=(output+chunk.toString()).slice(-14000);});
@@ -56,7 +58,7 @@ async function run() {
         await waitFor(`document.querySelector('[aria-label="创作人设"]').value===${JSON.stringify(custom.id)} && !document.querySelector('.sa-compose button[type=submit]').disabled && Boolean(document.querySelector('.sa-generation [aria-label="分辨率"]'))`,'custom role restored after page restart');
         await js(`(()=>{const s=document.querySelector('[aria-label="创作人设"]');s.value='general';s.dispatchEvent(new Event('change'));})()`);
     }
-    await js(`document.querySelector('.sa-generation [aria-label="分辨率"]').value='4k';document.querySelector('.sa-generation [aria-label="数量"]').value='${mixed?1:3}';document.querySelector('.sa-compose textarea').value='${mixed?'制作8张轮播图，12张详情图，1条15秒视频':'做三张测试海报'}';document.querySelector('.sa-compose').requestSubmit()`);
+    await js(`document.querySelector('.sa-generation [aria-label="分辨率"]').value='4k';document.querySelector('.sa-generation [aria-label="数量"]').value='${mixed?1:expected}';document.querySelector('.sa-compose textarea').value='${mixed?'制作8张轮播图，12张详情图，1条15秒视频':placeholders?'制作8张海报':'做三张测试海报'}';document.querySelector('.sa-compose').requestSubmit()`);
     if(questionMode){
         await waitFor(`!document.querySelector('.sa-questions').hidden && document.querySelectorAll('[data-sa-question-answer]').length===2 && !document.querySelector('.sa-compose button[type=submit]').disabled`,'explicit two-question card');
         assert.equal(await js(`document.querySelector('[data-sa-questions-submit]').disabled`),true);
@@ -93,6 +95,7 @@ async function run() {
         const savedGeneral=(await(await fetch(base+'/api/canvas-agent/personas')).json()).personas.find(p=>p.id==='general');assert.equal(savedGeneral.revision,1);
     }
     await js(`(()=>{const s=document.querySelector('[aria-label="创作人设"]');s.value='ecommerce';s.dispatchEvent(new Event('change'));})()`);
+    if(placeholders) await js(`(()=>{const s=document.querySelector('[aria-label="图片并发数量"]');s.value='4';s.dispatchEvent(new Event('change'));})()`);
     assert.equal(await js(`document.querySelector('[data-sa-action=approve]').disabled`),true);
     await js(`[...document.querySelectorAll('button')].find(b=>b.textContent==='应用人设与并发设置').click()`);
     await waitFor(`document.querySelector('.sa-run').textContent.includes('本次人设：电商图片大师') && !document.querySelector('[data-sa-action=approve]').disabled`,'persona replan requires approval');
@@ -108,6 +111,22 @@ async function run() {
     fs.writeFileSync(path.join(__dirname,'.runtime-agent-composer-menu.png'),(await win.webContents.capturePage()).toPNG());
     await js(`document.querySelector('[data-sa-menu=params]').click()`);
     await js(`document.querySelector('[data-sa-action=approve]').click()`);
+    if(placeholders){
+        await waitFor(`nodes.filter(n=>n.agentRunId).length===8 && document.querySelectorAll('[data-agent-state=waiting]').length===4 && document.querySelectorAll('[data-agent-state=pending]').length===4`,'eight reserved nodes with four active and four queued');
+        const reserved=await js(`nodes.filter(n=>n.agentRunId).map(n=>n.id).sort()`);
+        await waitFor(`[...document.querySelectorAll('[data-run-timer]')].some(timer=>timer.textContent!=='0s')`,'active node elapsed timer advances');
+        const first=reserved[0];
+        await js(`window.smartAgentCanvas.locate([${JSON.stringify(first)}]);void 0`);
+        await delay(150);
+        fs.writeFileSync(path.join(root,'.test-data/agent-placeholders-generating.png'),(await win.webContents.capturePage()).toPNG());
+        await win.loadURL(base+'/static/smart-canvas.html?id=smoke');
+        await waitFor(`nodes.filter(n=>n.agentRunId).length===8 && document.querySelectorAll('[data-agent-state=waiting]').length===4 && document.querySelectorAll('[data-agent-state=pending]').length===4`,'reserved generation state survives page reload');
+        assert.deepEqual(await js(`nodes.filter(n=>n.agentRunId).map(n=>n.id).sort()`),reserved);
+        await js(`document.querySelector('[data-agent-task]').click()`);
+        await waitFor(`!document.querySelector('#smartAgentPanel').hidden && document.querySelector('.sa-run h3')?.textContent==='执行中'`,'placeholder task button restores correct run');
+        assert.equal((await(await fetch(base+'/__agent_smoke/status')).json()).calls.generation,4);
+        await fetch(base+'/__agent_smoke/release',{method:'POST'});
+    }
     // Unsaved manual position change while the server generates another node.
     await delay(150);
     await js(`nodes.find(n=>n.id==='manual').x=777;render();void 0`);
@@ -124,6 +143,46 @@ async function run() {
     let data=await js(`({manualX:nodes.find(n=>n.id==='manual').x,ids:window.smartAgentCanvas.getContext().nodes.map(n=>n.id),status:document.querySelector('.sa-run h3').textContent})`);
     assert.equal(data.manualX,777);assert.equal(data.ids.length,expected+1);assert.equal(data.status,'已完成');
     assert.equal(await js(`document.querySelector('.sa-progress [role=progressbar]').getAttribute('aria-valuenow')`),'100');
+    if(placeholders){
+        const output=await js(`nodes.find(n=>n.agentRunId).images[0]`);
+        assert.equal(output.name,'测试海报.png');
+        assert.match(output.original_name,/^integration-result-\d+\.png$/);
+        assert.equal(output.agent_name,output.name);
+        assert.ok(await js(`document.querySelector('.sa-output').textContent.includes('测试海报.png')`));
+        assert.ok(await js(`[...document.querySelectorAll('[data-image-name]')].some(label=>label.textContent==='测试海报.png')`));
+        assert.equal(await js(`(()=>{const card=document.querySelector('.sa-output'),label=card.querySelector('span'),text=label.textContent;label.textContent='Agent_very_long_filename_'.repeat(12)+'.png';const fits=card.querySelector('button').getBoundingClientRect().right<=card.getBoundingClientRect().right;label.textContent=text;return fits;})()`),true);
+        await js(`window.__downloadCapture=[];window.__originalAnchorClick=HTMLAnchorElement.prototype.click;HTMLAnchorElement.prototype.click=function(){window.__downloadCapture.push({href:this.href,name:this.download});};void 0`);
+        for(const mode of ['agent','original']){
+            await js(`window.__downloadTest=downloadSmartImageWithChoice(nodes.find(n=>n.agentRunId).images[0]);void 0`);
+            await waitFor(`Boolean(document.querySelector('[data-smart-download-mode=agent]'))`,'Agent filename download chooser');
+            assert.deepEqual(await js(`[...document.querySelectorAll('[data-smart-download-mode]')].map(button=>button.dataset.smartDownloadMode)`),['agent','original','rename','cancel']);
+            if(mode==='agent'){
+                await js(`document.documentElement.classList.add('theme-dark','studio-theme-dark');void 0`);
+                await delay(200);
+                fs.writeFileSync(path.join(root,'.test-data/agent-name-download-choice.png'),(await win.webContents.capturePage()).toPNG());
+                await js(`document.documentElement.classList.remove('theme-dark','studio-theme-dark');void 0`);
+            }
+            await js(`document.querySelector('[data-smart-download-mode=${mode}]').click();window.__downloadTest.then(()=>null)`);
+            const captured=await js(`window.__downloadCapture.at(-1)`);
+            assert.equal(captured.name,mode==='agent'?output.name:output.original_name);
+            const downloaded=await fetch(captured.href);
+            assert.equal(downloaded.status,200);
+            assert.ok(downloaded.headers.get('content-disposition').includes(encodeURIComponent(captured.name)));
+            assert.deepEqual([...new Uint8Array(await downloaded.arrayBuffer()).slice(0,4)],[137,80,78,71]);
+        }
+        await js(`window.__nativeDownloadFetch=window.fetch;window.fetch=async(...args)=>{const response=await window.__nativeDownloadFetch(...args);if(String(args[0]).includes('/api/canvas-assets/download'))window.__downloadZip=[...new Uint8Array(await response.clone().arrayBuffer())];return response;};window.__downloadTest=zipDownloadImageItems('Agent 套图',nodes.filter(n=>n.agentRunId).slice(0,2).map(n=>n.images[0]));void 0`);
+        await waitFor(`Boolean(document.querySelector('[data-smart-download-mode=agent]'))`,'batch filename download chooser');
+        await js(`document.querySelector('[data-smart-download-mode=agent]').click();window.__downloadTest.then(()=>null)`);
+        const zip=Buffer.from(await js(`window.__downloadZip`));
+        const names=spawnSync(path.join(root,'backend/python/python.exe'),['-B','-X','utf8','-c','import io,json,sys,zipfile\nprint(json.dumps(zipfile.ZipFile(io.BytesIO(sys.stdin.buffer.read())).namelist()))'],{input:zip,encoding:'utf8',windowsHide:true});
+        assert.equal(names.status,0,names.stderr);
+        assert.deepEqual(JSON.parse(names.stdout),['测试海报.png','测试海报_2.png']);
+        await js(`window.__downloadCapture=[];window.__downloadTest=downloadRawImagesSequentially(nodes.filter(n=>n.agentRunId).slice(0,2).map(n=>n.images[0]));void 0`);
+        await waitFor(`Boolean(document.querySelector('[data-smart-download-mode=original]'))`,'sequential original filename chooser');
+        await js(`document.querySelector('[data-smart-download-mode=original]').click();window.__downloadTest.then(()=>null)`);
+        assert.deepEqual(await js(`window.__downloadCapture.map(item=>item.name)`),await js(`nodes.filter(n=>n.agentRunId).slice(0,2).map(n=>n.images[0].original_name)`));
+        await js(`HTMLAnchorElement.prototype.click=window.__originalAnchorClick;window.fetch=window.__nativeDownloadFetch;void 0`);
+    }
     await js(`document.querySelector('.sa-output button').click()`);
     assert.equal(await js(`window.smartAgentCanvas.getContext().selected_node_ids.some(id=>id!=='manual')`),true);
     await waitFor(`[...document.images].some(image=>(image.currentSrc || image.src).includes('integration-result-') && image.complete && image.naturalWidth>0)`,'actual generated media image loaded');
@@ -141,7 +200,7 @@ async function run() {
     await js(`document.querySelector('[data-sa-action=undo]').click()`);
     await waitFor(`window.smartAgentCanvas.getContext().nodes.filter(n=>n.id!=='manual').length===0`,'actual undo refresh');
     const status=await(await fetch(base+'/__agent_smoke/status')).json();
-    assert.equal(status.calls.llm,2+(personaManagement?1:0)+(questionMode?2:0));assert.deepEqual(status.calls.personas,[...Array(1+(personaManagement?1:0)+(questionMode?2:0)).fill('general'),'ecommerce']);assert.equal(status.calls.peak,2);assert.equal(status.calls.generation,expected);if(mixed)assert.equal(status.calls.video,1);assert.equal(status.canvas.nodes.length,1);assert.equal(status.canvas.nodes[0].x,777);assert.equal(errors.length,0,errors.join('\n'));
+    assert.equal(status.calls.llm,2+(personaManagement?1:0)+(questionMode?2:0));assert.deepEqual(status.calls.personas,[...Array(1+(personaManagement?1:0)+(questionMode?2:0)).fill('general'),'ecommerce']);assert.equal(status.calls.peak,placeholders?4:2);assert.equal(status.calls.generation,expected);if(mixed)assert.equal(status.calls.video,1);assert.equal(status.canvas.nodes.length,1);assert.equal(status.canvas.nodes[0].x,777);assert.equal(errors.length,0,errors.join('\n'));
     win.webContents.sendInputEvent({type:'keyDown',keyCode:'A',modifiers:['control','shift']});
     win.webContents.sendInputEvent({type:'keyUp',keyCode:'A',modifiers:['control','shift']});
     await waitFor(`document.querySelector('#smartAgentPanel').hidden`,'Agent shortcut closes panel');
@@ -153,7 +212,7 @@ async function run() {
     win.webContents.sendInputEvent({type:'keyDown',keyCode:'A',modifiers:['control','shift']});win.webContents.sendInputEvent({type:'keyUp',keyCode:'A',modifiers:['control','shift']});
     await waitFor(`!document.querySelector('#smartAgentPanel').hidden`,'composer dark preview');
     await delay(200);fs.writeFileSync(path.join(__dirname,'.runtime-agent-composer-dark.png'),(await win.webContents.capturePage()).toPNG());
-    console.log('INTEGRATION_SMOKE_OK '+JSON.stringify({origin:base,actualPage:true,actualBridge:true,actualAgentHostOps:true,upstream:'fake only',generated:expected,video:status.calls.video || 0,peak:status.calls.peak,personas:status.calls.personas,undoRemainingGenerated:0,manualDraftX:777,screenshot}));
+    console.log('INTEGRATION_SMOKE_OK '+JSON.stringify({origin:base,packaged,actualPage:true,actualBridge:true,actualAgentHostOps:true,upstream:'fake only',generated:expected,video:status.calls.video || 0,peak:status.calls.peak,personas:status.calls.personas,undoRemainingGenerated:0,manualDraftX:777,screenshot}));
 }
 async function cleanup(){if(win&&!win.isDestroyed())win.destroy();if(base&&!exited){try{await fetch(base+'/__agent_smoke/shutdown',{method:'POST'});}catch{}}for(let i=0;i<70&&!exited;i++)await delay(100);if(child&&!exited){child.kill();for(let i=0;i<20&&!exited;i++)await delay(100);}}
 run().then(async()=>{await cleanup();app.quit();}).catch(async error=>{console.error(error.stack||error);await cleanup();app.exit(1);});

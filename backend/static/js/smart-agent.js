@@ -346,7 +346,7 @@
             (run.steps || []).forEach(s => { runBox.append(el('p','sa-step-status',`${s.title || s.id}：${statusOf(s.status)}${s.error ? ' · ' + (typeof s.error === 'string' ? s.error : s.error.message || '需要处理') : ''}`)); });
             if (run.error) runBox.append(el('p','sa-error',typeof run.error === 'string' ? run.error : run.error.message || '任务需要处理'));
             const outputs = run.outputs || [];
-            outputs.forEach((o, i) => { const card = el('div','sa-output'); card.append(el('span','',`成果 ${i + 1} · ${o.kind || o.media_kind || '媒体'}`)); const ids = o.node_ids || (o.node_id ? [o.node_id] : []); if (ids.length) card.append(button('定位', () => bridge()?.locate(ids))); else card.append(el('span','sa-muted','等待交付')); runBox.append(card); });
+            outputs.forEach((o, i) => { const card = el('div','sa-output'); card.append(el('span','',`成果 ${i + 1} · ${o.name || o.kind || o.media_kind || '媒体'}`)); const ids = o.node_ids || (o.node_id ? [o.node_id] : []); if (ids.length) card.append(button('定位', () => bridge()?.locate(ids))); else card.append(el('span','sa-muted','等待交付')); runBox.append(card); });
             const ids = nodeIdsOf(run); if (ids.length) runBox.append(button('定位本次成果', () => bridge()?.locate(ids)));
             const actions = el('div','sa-actions'); actionsOf(run).forEach(action => { const label=action==='approve' && plan?.steps?.some(s=>s.blocked_reason)?'仅批准已就绪任务':actionLabels[action];const b = button(label, () => guarded(() => act(action)), action === 'approve' ? 'sa-primary' : ''); b.dataset.saAction = action; actions.append(b); }); runBox.append(actions); renderDisabled();
         }
@@ -544,9 +544,27 @@
             if (open) { syncContext(true); clearInterval(contextTimer); contextTimer=setInterval(() => syncContext(false),1500); schedulePoll(0); input.focus(); }
             else {closeMenu();clearTimeout(pollTimer); clearInterval(contextTimer); entry.focus(); }
         }
+        function openCanvasTask(event) {
+            const target = event.detail;
+            if(!target?.runId || target.canvasId !== bridge()?.getContext()?.canvas_id) return;
+            setOpen(true);
+            guarded(async () => {
+                await syncContext(true);
+                const epoch = state.epoch;
+                const data = await api(`/runs/${encodeURIComponent(target.runId)}`);
+                if(epoch !== state.epoch || data.run.canvas_id !== state.canvas) return;
+                state.session = data.run.session_id;
+                state.run = data.run;
+                sessions.value = state.session;
+                await loadHistory();
+                renderRun();
+                schedulePoll(0);
+            });
+        }
+        root.addEventListener('smart-agent-open-run',openCanvasTask);
         panel.addEventListener('keydown', e => { e.stopPropagation(); if(e.key==='Escape') { e.preventDefault();if(openMenu)closeMenu(true);else setOpen(false); } });
         ['pointerdown','mousedown','wheel','dblclick'].forEach(type => panel.addEventListener(type,e => e.stopPropagation()));
-        function dispose() { disposed=true;doc.removeEventListener('pointerdown',dismissMenus,true); root.removeEventListener('keydown',shortcut,true); root.removeEventListener('resize',positionEntry); anchorObserver?.disconnect(); arrangeObserver?.disconnect(); clearTimeout(pollTimer); clearInterval(contextTimer); unsubscribe?.(); requests.forEach(c => c.abort()); }
+        function dispose() { disposed=true;doc.removeEventListener('pointerdown',dismissMenus,true); root.removeEventListener('keydown',shortcut,true); root.removeEventListener('resize',positionEntry); root.removeEventListener('smart-agent-open-run',openCanvasTask); anchorObserver?.disconnect(); arrangeObserver?.disconnect(); clearTimeout(pollTimer); clearInterval(contextTimer); unsubscribe?.(); requests.forEach(c => c.abort()); }
         root.addEventListener('pagehide',dispose,{once:true});
         api('/providers').then(data => {
             if(disposed) return; state.providers=data.providers || []; provider.replaceChildren();

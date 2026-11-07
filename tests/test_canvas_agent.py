@@ -721,6 +721,133 @@ class AgentTests(unittest.IsolatedAsyncioTestCase):
         self.assertFalse(self.generated)
         self.assertIn("变化", final["steps"][0]["error"])
 
+    def use_generation_nodes(self):
+        from threading import RLock
+        from agent_canvas_ops import CanvasOperations
+        self.ops = CanvasOperations(lambda key: str(Path(self.temp.name) / (key + '.json')), RLock())
+        self.canvas['kind'] = 'smart'
+        self.ops.save(self.canvas)
+        self.host.update(load_canvas=self.ops.read, reserve_output=self.ops.reserve_output,
+                         update_output=self.ops.update_output, sync_output_names=self.ops.sync_output_names,
+                         apply_operation=self.ops.apply, undo_operation=self.ops.undo)
+        self.result = lambda spec: {'outputs':[{'url':'/output/' + spec['request_id'] + '.png','kind':spec['kind']}]}
+
+    async def test_approved_batch_reserves_all_slots_before_parallel_submission(self):
+        self.use_generation_nodes()
+        self.reply['steps'] = [self.step(id=f'item-{i}') for i in range(8)]
+        self.generation_gate = asyncio.Event()
+        run = await self.plan(self.body(text='制作8张海报',image_concurrency=4))
+        approved = await self.act(run,'approve')
+        initial = self.ops.read('canvas')
+        slots = [n for n in initial['nodes'] if n.get('agentRunId') == run['id']]
+        self.assertEqual(len(slots),8)
+        self.assertTrue(all(n['queued'] for n in slots))
+        for _ in range(100):
+            if len(self.generated)==4:break
+            await asyncio.sleep(.005)
+        self.assertEqual(len(self.generated),4)
+        current = self.ops.read('canvas')
+        slots = [n for n in current['nodes'] if n.get('agentRunId') == run['id']]
+        self.assertEqual(sum(n['pending'] for n in slots),4)
+        self.assertEqual(sum(n['queued'] for n in slots),4)
+        moved=slots[0]['id']
+        next(n for n in current['nodes'] if n['id']==moved)['x']=777
+        self.ops.save(current)
+        self.generation_gate.set()
+        final = await self.settle(run['id'],('completed',))
+        slots = [n for n in self.ops.read('canvas')['nodes'] if n.get('agentRunId') == run['id']]
+        self.assertEqual({n['id'] for n in slots},{s['node_ids'][0] for s in approved['steps']})
+        self.assertTrue(all(n['images'] and n['agentStatus']=='completed' for n in slots))
+        self.assertEqual(next(n for n in slots if n['id']==moved)['x'],777)
+        self.assertEqual(len(final['outputs']),8)
+
+    async def test_stopped_slots_resume_without_duplication_and_failed_slot_retries(self):
+        self.use_generation_nodes()
+        self.reply['steps'][0]['count']=3
+        self.generation_gate=asyncio.Event()
+        run=await self.plan(self.body(image_concurrency=1))
+        await self.act(run,'approve')
+        for _ in range(100):
+            if self.generated:break
+            await asyncio.sleep(.005)
+        await self.act(run,'stop')
+        slots=[n for n in self.ops.read('canvas')['nodes'] if n.get('agentRunId')]
+        self.assertEqual(sum(n['agentStatus']=='stopped' for n in slots),2)
+        self.generation_gate.set()
+        final=await self.settle(run['id'],('stopped',))
+        self.result={'status':'failed'}
+        await self.act(final,'continue')
+        final=await self.settle(run['id'],('partial',))
+        slots=[n for n in self.ops.read('canvas')['nodes'] if n.get('agentRunId')]
+        self.assertEqual(sum(n['agentStatus']=='failed' for n in slots),2)
+        ids={n['id'] for n in slots}
+        self.result=lambda spec:{'outputs':[{'url':'/output/retry-'+spec['request_id']+'.png','kind':'image'}]}
+        await self.act(final,'retry')
+        await self.settle(run['id'],('completed',))
+        self.assertEqual({n['id'] for n in self.ops.read('canvas')['nodes'] if n.get('agentRunId')},ids)
+
+    async def test_deleted_placeholder_retains_results_without_resurrection(self):
+        self.use_generation_nodes()
+        self.generation_gate=asyncio.Event()
+        run=await self.plan()
+        await self.act(run,'approve')
+        for _ in range(100):
+            if self.generated:break
+            await asyncio.sleep(.005)
+        canvas=self.ops.read('canvas');canvas['nodes']=[n for n in canvas['nodes'] if not n.get('agentRunId')];self.ops.save(canvas)
+        self.generation_gate.set()
+        final=await self.settle(run['id'],('needs_attention',))
+        self.assertEqual(final['steps'][0]['status'],'delivery_failed')
+        self.assertTrue(final['outputs'])
+        self.assertFalse(any(n.get('agentRunId') for n in self.ops.read('canvas')['nodes']))
+
+    async def test_restart_queries_existing_task_into_the_same_reserved_node(self):
+        self.use_generation_nodes()
+        self.generation_gate=asyncio.Event()
+        run=await self.plan()
+        approved=await self.act(run,'approve')
+        for _ in range(100):
+            if self.generated:break
+            await asyncio.sleep(.005)
+        await self.service.close()
+        self.host['query_task']=lambda step:{'outputs':[{'url':'/output/recovered.png','kind':'image'}]}
+        self.service=AgentService(self.host)
+        await self.service.start()
+        final=await self.settle(run['id'],('completed',))
+        slots=[n for n in self.ops.read('canvas')['nodes'] if n.get('agentRunId')]
+        self.assertEqual(len(self.generated),1)
+        self.assertEqual(len(slots),1)
+        self.assertEqual(slots[0]['id'],approved['steps'][0]['node_ids'][0])
+        self.assertEqual(slots[0]['images'][0]['url'],'/output/recovered.png')
+        self.assertEqual(final['steps'][0]['status'],'completed')
+
+    async def test_old_completed_results_receive_titles_and_keep_original_names(self):
+        self.use_generation_nodes()
+        run=await self.plan()
+        await self.act(run,'approve')
+        await self.settle(run['id'],('completed',))
+        current=self.service.require_run(run['id'])
+        step=current['steps'][0]
+        original_name=step['outputs'][0]['original_name']
+        step['outputs'][0]['name']=original_name
+        for key in ('original_name','agent_name'):step['outputs'][0].pop(key,None)
+        step.pop('names_synced',None)
+        self.service.store.save(current,'fixture_legacy_names')
+        canvas=self.ops.read('canvas')
+        image=next(n for n in canvas['nodes'] if n.get('agentRunId'))['images'][0]
+        image['name']=original_name
+        for key in ('original_name','agent_name'):image.pop(key,None)
+        self.ops.save(canvas)
+        await self.service.close()
+        self.service=AgentService(self.host)
+        await self.service.start()
+        restored=self.service.snapshot(self.service.require_run(run['id']))
+        self.assertEqual(restored['outputs'][0]['name'],'海报.png')
+        self.assertEqual(restored['outputs'][0]['original_name'],original_name)
+        image=next(n for n in self.ops.read('canvas')['nodes'] if n.get('agentRunId'))['images'][0]
+        self.assertEqual(image['name'],'海报.png')
+        self.assertEqual(len(self.generated),1)
+
 
 if __name__ == "__main__":
     unittest.main()

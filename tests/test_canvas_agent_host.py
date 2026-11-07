@@ -59,6 +59,9 @@ class HostTests(unittest.IsolatedAsyncioTestCase):
 
         self.module = types.SimpleNamespace(DATA_DIR=self.root, ASSETS_DIR=self.root / "assets", OUTPUT_DIR=self.root / "output", OUTPUT_OUTPUT_DIR=self.root / "output", load_api_providers=lambda: [self.provider, {"id": "disabled", "enabled": False}], load_canvas=lambda _: {"nodes": [{"id": "a", "images": [{"url": "/assets/a.png", "width": 1, "height": 1}]}]}, output_file_from_url=lambda url: str(self.root / url.lstrip("/")), AGENT_SUBMISSION_OBSERVER=contextvars.ContextVar("fixture-observer", default=None), OnlineImageRequest=lambda **kwargs: types.SimpleNamespace(**kwargs), CanvasVideoRequest=lambda **kwargs: types.SimpleNamespace(**kwargs), build_online_image_result=generated, canvas_video=video, is_apimart_provider=lambda p: p.get("protocol") == "apimart", effective_protocol=lambda p, model: p.get("protocol", "openai"), resolve_chat_provider=lambda p, model, ms: ("https://fixture.invalid/v1", {"Authorization": "Bearer test-only"}, model), httpx=types.SimpleNamespace(AsyncClient=lambda **kwargs: httpx.AsyncClient(transport=httpx.MockTransport(transport))), unwrap_apimart_response=lambda raw: raw.get("data", raw), fetch_image_task_payload=fetch, image_task_status=lambda raw: raw.get("status", ""), IMAGE_TASK_FAILED_STATUSES={"FAILED"}, IMAGE_TASK_SUCCESS_STATUSES={"COMPLETED"}, extract_images=lambda raw: [{"url": "https://fixture.invalid/image.png"}], save_ai_image_to_output=save_image, video_task_url_candidates=lambda *args: ["https://fixture.invalid/task"], video_api_root=lambda p: "https://fixture.invalid", api_headers=lambda **kwargs: {}, VIDEO_TASK_FAILURE_STATUSES={"FAILED"}, video_output_urls=lambda raw: raw.get("videos", []), save_remote_video_to_output=save_video, manager=types.SimpleNamespace(broadcast_canvas_updated=broadcast), now_ms=lambda: 1)
         self.ops = types.SimpleNamespace(apply=lambda cid, oid, operation: {"operation_id": oid, "node_ids": ["a"]}, undo=lambda cid, oid: {"operation_id": oid, "conflicts": []})
+        self.ops.reserve_output = lambda *args: {"node_ids": ["slot"]}
+        self.ops.update_output = lambda *args, **kwargs: {"node_ids": ["slot"]}
+        self.ops.sync_output_names = lambda *args: {"node_ids": ["slot"]}
         self.host = create_host(self.module, self.ops)
 
     async def asyncTearDown(self):
@@ -208,8 +211,9 @@ class HostTests(unittest.IsolatedAsyncioTestCase):
                 if current["status"] != "running":
                     break
             self.assertEqual(current["status"], "completed", current.get("error"))
-            self.assertEqual(self.calls[0].background, "transparent")
-            self.assertEqual(self.calls[0].version, "sunburst")
+            image_call = next(call for call in self.calls if hasattr(call, 'background'))
+            self.assertEqual(image_call.background, "transparent")
+            self.assertEqual(image_call.version, "sunburst")
         finally:
             await service.close()
 
