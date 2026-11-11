@@ -22,6 +22,7 @@ try {
     if ($LASTEXITCODE -ne 0) { throw 'Backend checks failed.' }
     & npm.cmd run dist:win
     if ($LASTEXITCODE -ne 0) { throw 'Windows packaging failed.' }
+    & "$PSScriptRoot/check_install_directory.ps1"
     & node tools/write_update_notes.cjs
     if ($LASTEXITCODE -ne 0) { throw 'Desktop update announcement validation failed.' }
     $hybridArgs = @('-B','-X','utf8','tools/build_hybrid_release.py')

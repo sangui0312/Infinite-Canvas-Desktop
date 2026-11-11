@@ -10745,6 +10745,7 @@ function setImageEditMode(mode, userTouched=false){
     cropCanvasEl.classList.toggle('brush-mode', imageEditMode === 'brush');
     cropCanvasEl.classList.toggle('resize-mode', imageEditMode === 'resize');
     cropCanvasEl.classList.toggle('grid-mode', imageEditMode === 'grid');
+    if(imageEditMode !== 'grid') clearGridGuideOverlay();
     cropCanvasEl.classList.toggle('outpaint-mode', imageEditMode === 'outpaint');
     syncGridCustomCursor();
     document.querySelectorAll('[data-image-edit-mode]').forEach(btn => btn.classList.toggle('active', btn.dataset.imageEditMode === imageEditMode));
@@ -12274,31 +12275,55 @@ function renderGridJoinPreview(){
     });
     if(countEl) countEl.textContent = `将拼接 ${items.length} 张图片 · 输出长边 ${Math.round(gridJoinOutputSize / 1024)}K`;
 }
+function clearGridGuideOverlay(){
+    const overlay = document.getElementById('gridGuideOverlay');
+    if(!overlay) return;
+    overlay.replaceChildren();
+    overlay.classList.remove('active');
+}
+function renderGridGuideOverlay(horizontalPositions=[], verticalPositions=[], gap=0){
+    const overlay = document.getElementById('gridGuideOverlay');
+    const img = document.getElementById('cropImage');
+    clearGridGuideOverlay();
+    if(!overlay || imageEditMode !== 'grid' || !img?.naturalWidth || !img?.naturalHeight) return;
+    // Keep guide positions in image-local percentages, independent of UI and display scaling.
+    const appendLine = (kind, fraction) => {
+        const line = document.createElement('div');
+        line.className = 'grid-guide-line ' + kind;
+        line.style[kind === 'horizontal' ? 'top' : 'left'] = `${fraction * 100}%`;
+        overlay.appendChild(line);
+    };
+    const offsets = gap > 0 ? [-0.5, 0.5] : [0];
+    horizontalPositions.forEach(position => offsets.forEach(offset =>
+        appendLine('horizontal', position + offset * gap / img.naturalHeight)));
+    verticalPositions.forEach(position => offsets.forEach(offset =>
+        appendLine('vertical', position + offset * gap / img.naturalWidth)));
+    overlay.classList.add('active');
+}
 function refreshGridSplitPreview(){
     const canvasEl = editDrawCanvas();
-    const ctx = canvasEl.getContext('2d');
-    ctx.clearRect(0, 0, canvasEl.width, canvasEl.height);
+    canvasEl.getContext('2d').clearRect(0, 0, canvasEl.width, canvasEl.height);
     renderGridJoinPreview();
-    if(imageEditMode !== 'grid') return;
-    if(gridOperationMode === 'join') return;
+    if(imageEditMode !== 'grid' || gridOperationMode === 'join'){
+        clearGridGuideOverlay();
+        return;
+    }
     const countEl = document.getElementById('gridSplitCount');
-    const lineWidth = Math.max(2, Math.round(Math.min(canvasEl.width, canvasEl.height) / 320));
-    const drawLine = (x1, y1, x2, y2) => {
-        ctx.save(); ctx.lineWidth = lineWidth + 2; ctx.strokeStyle = 'rgba(2,6,23,0.72)'; ctx.beginPath(); ctx.moveTo(x1, y1); ctx.lineTo(x2, y2); ctx.stroke();
-        ctx.lineWidth = lineWidth; ctx.strokeStyle = 'rgba(255,255,255,0.92)'; ctx.beginPath(); ctx.moveTo(x1, y1); ctx.lineTo(x2, y2); ctx.stroke(); ctx.restore();
-    };
     if(gridCustomMode){
         const gap = Math.max(0, Math.min(240, Number(document.getElementById('gridGapSize')?.value || 0)));
-        const hLines = gridCustomLines.filter(l => l.type === 'h'), vLines = gridCustomLines.filter(l => l.type === 'v');
+        const hLines = gridCustomLines.filter(line => line.type === 'h');
+        const vLines = gridCustomLines.filter(line => line.type === 'v');
         if(countEl) countEl.textContent = tr('canvas.gridWillOutput').replace('{n}', (hLines.length + 1) * (vLines.length + 1));
-        hLines.forEach(l => { const y = l.pos * canvasEl.height; gap > 0 ? (drawLine(0, y - gap / 2, canvasEl.width, y - gap / 2), drawLine(0, y + gap / 2, canvasEl.width, y + gap / 2)) : drawLine(0, y, canvasEl.width, y); });
-        vLines.forEach(l => { const x = l.pos * canvasEl.width; gap > 0 ? (drawLine(x - gap / 2, 0, x - gap / 2, canvasEl.height), drawLine(x + gap / 2, 0, x + gap / 2, canvasEl.height)) : drawLine(x, 0, x, canvasEl.height); });
+        renderGridGuideOverlay(hLines.map(line => line.pos), vLines.map(line => line.pos), gap);
         return;
     }
     const {rows, cols, gap} = gridSplitSettings();
     if(countEl) countEl.textContent = tr('canvas.gridWillOutput').replace('{n}', rows * cols);
-    for(let i = 1; i < cols; i++){ const x = i * canvasEl.width / cols; gap > 0 ? (drawLine(x - gap / 2, 0, x - gap / 2, canvasEl.height), drawLine(x + gap / 2, 0, x + gap / 2, canvasEl.height)) : drawLine(x, 0, x, canvasEl.height); }
-    for(let i = 1; i < rows; i++){ const y = i * canvasEl.height / rows; gap > 0 ? (drawLine(0, y - gap / 2, canvasEl.width, y - gap / 2), drawLine(0, y + gap / 2, canvasEl.width, y + gap / 2)) : drawLine(0, y, canvasEl.width, y); }
+    renderGridGuideOverlay(
+        Array.from({length:Math.max(0, rows - 1)}, (_, index) => (index + 1) / rows),
+        Array.from({length:Math.max(0, cols - 1)}, (_, index) => (index + 1) / cols),
+        gap
+    );
 }
 function renderCropBox(){
     if(!cropState) return;

@@ -5776,104 +5776,40 @@ function clearGridGuideOverlay(){
 function renderGridGuideOverlay(horizontalPositions=[], verticalPositions=[], gap=0){
     const overlay = document.getElementById('gridGuideOverlay');
     const img = document.getElementById('cropImage');
-    const inner = document.querySelector('#imageEditStage .image-edit-stage-inner');
     clearGridGuideOverlay();
-    if(!overlay || imageEditMode !== 'grid' || !img?.clientWidth || !img?.clientHeight || !inner) return;
-    const imageRect = img.getBoundingClientRect();
-    const innerRect = inner.getBoundingClientRect();
-    const imageLeft = imageRect.left - innerRect.left;
-    const imageTop = imageRect.top - innerRect.top;
-    const imageWidth = img.clientWidth;
-    const imageHeight = img.clientHeight;
-    const gapX = Math.max(0, Number(gap) || 0) * imageWidth / Math.max(1, img.naturalWidth || imageWidth);
-    const gapY = Math.max(0, Number(gap) || 0) * imageHeight / Math.max(1, img.naturalHeight || imageHeight);
-    const appendLine = (kind, position) => {
+    if(!overlay || imageEditMode !== 'grid' || !img?.naturalWidth || !img?.naturalHeight) return;
+    // Keep guide positions in image-local percentages, independent of UI and display scaling.
+    const appendLine = (kind, fraction) => {
         const line = document.createElement('div');
         line.className = 'grid-guide-line ' + kind;
-        if(kind === 'horizontal') line.style.top = String(imageTop + position) + 'px';
-        else line.style.left = String(imageLeft + position) + 'px';
+        line.style[kind === 'horizontal' ? 'top' : 'left'] = `${fraction * 100}%`;
         overlay.appendChild(line);
     };
     const offsets = gap > 0 ? [-0.5, 0.5] : [0];
-    horizontalPositions.forEach(position => offsets.forEach(offset => appendLine('horizontal', position * imageHeight + offset * gapY)));
-    verticalPositions.forEach(position => offsets.forEach(offset => appendLine('vertical', position * imageWidth + offset * gapX)));
+    horizontalPositions.forEach(position => offsets.forEach(offset =>
+        appendLine('horizontal', position + offset * gap / img.naturalHeight)));
+    verticalPositions.forEach(position => offsets.forEach(offset =>
+        appendLine('vertical', position + offset * gap / img.naturalWidth)));
     overlay.classList.add('active');
 }
-
 function refreshGridSplitPreview(){
     const canvasEl = editDrawCanvas();
-    const ctx = canvasEl.getContext('2d');
-    ctx.clearRect(0, 0, canvasEl.width, canvasEl.height);
+    canvasEl.getContext('2d').clearRect(0, 0, canvasEl.width, canvasEl.height);
     if(imageEditMode !== 'grid'){
         clearGridGuideOverlay();
         return;
     }
     const countEl = document.getElementById('gridSplitCount');
-    const lineWidth = Math.max(2, Math.round(Math.min(canvasEl.width, canvasEl.height) / 320));
-    const drawGuideLine = (x1, y1, x2, y2) => {
-        ctx.save();
-        ctx.lineWidth = lineWidth + 2;
-        ctx.strokeStyle = 'rgba(2,6,23,0.68)';
-        ctx.beginPath(); ctx.moveTo(x1, y1); ctx.lineTo(x2, y2); ctx.stroke();
-        ctx.lineWidth = lineWidth + 1;
-        ctx.strokeStyle = 'rgba(255,255,255,0.98)';
-        ctx.beginPath(); ctx.moveTo(x1, y1); ctx.lineTo(x2, y2); ctx.stroke();
-        ctx.restore();
-    };
     if(gridCustomMode){
-        // 自定义模式：按已放置线渲染（包含空心范围预览）
         const gap = Math.max(0, Math.min(240, Number(document.getElementById('gridGapSize')?.value || 0)));
-        const hLines = gridCustomLines.filter(l => l.type === 'h');
-        const vLines = gridCustomLines.filter(l => l.type === 'v');
+        const hLines = gridCustomLines.filter(line => line.type === 'h');
+        const vLines = gridCustomLines.filter(line => line.type === 'v');
         if(countEl) countEl.textContent = tr('canvas.gridWillOutput').replace('{n}', (hLines.length + 1) * (vLines.length + 1));
-        ctx.save();
-        hLines.forEach(l => {
-            const y = l.pos * canvasEl.height;
-            if(gap > 0){
-                drawGuideLine(0, y - gap / 2, canvasEl.width, y - gap / 2);
-                drawGuideLine(0, y + gap / 2, canvasEl.width, y + gap / 2);
-            } else {
-                drawGuideLine(0, y, canvasEl.width, y);
-            }
-        });
-        vLines.forEach(l => {
-            const x = l.pos * canvasEl.width;
-            if(gap > 0){
-                drawGuideLine(x - gap / 2, 0, x - gap / 2, canvasEl.height);
-                drawGuideLine(x + gap / 2, 0, x + gap / 2, canvasEl.height);
-            } else {
-                drawGuideLine(x, 0, x, canvasEl.height);
-            }
-        });
-        ctx.restore();
         renderGridGuideOverlay(hLines.map(line => line.pos), vLines.map(line => line.pos), gap);
         return;
     }
-    // 常规模式
     const {rows, cols, gap} = gridSplitSettings();
     if(countEl) countEl.textContent = tr('canvas.gridWillOutput').replace('{n}', rows * cols);
-    ctx.save();
-    const scaleX = canvasEl.width;
-    const scaleY = canvasEl.height;
-    for(let i = 1; i < cols; i++){
-        const x = i * scaleX / cols;
-        if(gap > 0){
-            drawGuideLine(x - gap / 2, 0, x - gap / 2, scaleY);
-            drawGuideLine(x + gap / 2, 0, x + gap / 2, scaleY);
-        } else {
-            drawGuideLine(x, 0, x, scaleY);
-        }
-    }
-    for(let i = 1; i < rows; i++){
-        const y = i * scaleY / rows;
-        if(gap > 0){
-            drawGuideLine(0, y - gap / 2, scaleX, y - gap / 2);
-            drawGuideLine(0, y + gap / 2, scaleX, y + gap / 2);
-        } else {
-            drawGuideLine(0, y, scaleX, y);
-        }
-    }
-    ctx.restore();
     renderGridGuideOverlay(
         Array.from({length:Math.max(0, rows - 1)}, (_, index) => (index + 1) / rows),
         Array.from({length:Math.max(0, cols - 1)}, (_, index) => (index + 1) / cols),

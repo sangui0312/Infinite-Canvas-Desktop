@@ -915,7 +915,7 @@ body.theme-dark .error-title { color:#fca5a5; }
 .image-edit-stage-inner { position:relative; min-width:100%; min-height:100%; width:max-content; height:max-content; display:flex; align-items:center; justify-content:center; padding:18px; box-sizing:border-box; margin:auto; }
 .image-edit-stage.overflow-x .image-edit-stage-inner { justify-content:flex-start; }
 .image-edit-stage.overflow-y .image-edit-stage-inner { align-items:flex-start; }
-.grid-guide-overlay { position:absolute; inset:0; z-index:3; display:none; pointer-events:none; }
+.grid-guide-overlay { position:absolute; inset:0; z-index:3; display:none; pointer-events:none; overflow:hidden; }
 .grid-guide-overlay.active { display:block; }
 .grid-guide-line { position:absolute; background:#fff; box-shadow:0 0 0 1px rgba(15,23,42,.72), 0 0 12px rgba(15,23,42,.28); }
 .grid-guide-line.horizontal { left:0; right:0; height:4px; transform:translateY(-50%); }
