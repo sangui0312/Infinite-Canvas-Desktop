@@ -24,7 +24,36 @@ const promptWindows = new Map();
 let boundsFile = path.join(root, 'window.json');
 function trusted(event) { return win && event.sender === win.webContents && isLocalURL(event.senderFrame?.url); }
 function external(url) { try { const parsed = new URL(url); if (['https:', 'http:'].includes(parsed.protocol) && !['127.0.0.1', 'localhost', '[::1]'].includes(parsed.hostname)) shell.openExternal(parsed.href).catch(() => {}); } catch {} }
+function downloadLocation() {
+  try {
+    const configured = JSON.parse(fs.readFileSync(path.join(root, 'download-settings.json'), 'utf8')).directory;
+    if (typeof configured === 'string' && path.isAbsolute(configured) && fs.statSync(configured).isDirectory()) return configured;
+  } catch {}
+  return app.getPath('downloads');
+}
 function installIPC() {
+  ipcMain.handle('desktop:download-info', event => {
+    if (!trusted(event)) throw Error('Unauthorized');
+    return { path: downloadLocation() };
+  });
+  ipcMain.handle('desktop:download-change', async (event, reset) => {
+    if (!trusted(event)) throw Error('Unauthorized');
+    let directory = app.getPath('downloads');
+    if (!reset) {
+      const selected = await dialog.showOpenDialog(win, { title: '选择默认下载位置', defaultPath: downloadLocation(), properties: ['openDirectory', 'createDirectory'] });
+      if (selected.canceled || !selected.filePaths[0]) return { canceled: true };
+      directory = selected.filePaths[0];
+    }
+    try {
+      if (!path.isAbsolute(directory) || !fs.statSync(directory).isDirectory()) throw Error('Invalid directory');
+      fs.accessSync(directory, fs.constants.W_OK);
+      const file = path.join(root, 'download-settings.json');
+      const temporary = file + '.tmp';
+      fs.writeFileSync(temporary, JSON.stringify({ directory }), 'utf8');
+      fs.renameSync(temporary, file);
+      return { path: directory };
+    } catch { return { error: '无法保存下载位置，请选择可写入的文件夹。' }; }
+  });
   ipcMain.handle('desktop:storage-info', event => {
     if (!trusted(event)) throw Error('Unauthorized');
     return storage.info();
@@ -306,7 +335,7 @@ else {
     session.defaultSession.setPermissionCheckHandler((contents, permission, origin) => contents === win.webContents && isLocalURL(origin) && permissions.has(permission));
     session.defaultSession.on('will-download', (_event, item) => {
       const name = path.basename(item.getFilename()).replace(/[<>:"/\\|?*\x00-\x1f]/g, '_');
-      item.setSaveDialogOptions({ title: '保存下载文件', defaultPath: path.join(app.getPath('downloads'), name) });
+      item.setSaveDialogOptions({ title: '保存下载文件', defaultPath: path.join(downloadLocation(), name) });
     });
     backend.on('crash', () => { if (!restarting && ready && !quitting) void failure('桌面服务意外退出。'); });
     backend.on('restart', event => {

@@ -1000,6 +1000,26 @@
 
         /* 更新弹窗：双卡片需要更宽的面板，避免左右布局被裁剪 */
         #project-update-modal .studio-modal-panel { width:min(880px, 100%); max-height:min(840px, calc(100vh - 48px)); }
+        #project-update-modal .studio-modal-head,
+        #project-update-modal .studio-modal-actions,
+        #project-update-modal .update-modal-status { flex:0 0 auto; }
+        #project-update-modal .studio-modal-body {
+            display:flex;
+            flex-direction:column;
+            flex:1 1 auto;
+            min-height:0;
+            overflow:hidden;
+        }
+        #project-update-modal .studio-modal-copy { flex:0 0 auto; }
+        #project-update-modal .update-notes-box {
+            flex:1 1 auto;
+            min-height:0;
+            overflow:auto;
+            margin-bottom:0;
+        }
+        #project-update-modal .update-modal-status { padding:0 20px 16px; }
+        #project-update-modal .update-modal-summary { margin-top:0; }
+        #project-update-modal #desktop-update-progress-label { margin:6px 0 0; font-size:12px; }
         .update-notes-box { margin:2px 0 14px; padding:12px; border:1px solid #e5e7eb; border-radius:8px; background:#fbfdff; }
         .update-notes-head { display:flex; align-items:center; justify-content:space-between; gap:12px; margin-bottom:8px; }
         .update-notes-head strong { font-size:12px; color:#111827; font-weight:950; }
@@ -1712,6 +1732,8 @@
                     <ol id="project-update-notes-list" class="update-notes-list"></ol>
                     <p id="project-update-notes-empty" class="update-notes-empty" hidden>暂未获取到更新说明。</p>
                 </div>
+            </div>
+            <div class="update-modal-status">
                 <div id="project-update-summary" class="update-modal-summary warn">
                     <span class="update-modal-dot" aria-hidden="true"></span>
                     <div>

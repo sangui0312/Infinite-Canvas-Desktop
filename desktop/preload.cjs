@@ -5,7 +5,10 @@ contextBridge.exposeInMainWorld('desktopBridge', Object.freeze({
     info: () => ipcRenderer.invoke('desktop:storage-info'),
     open: () => ipcRenderer.invoke('desktop:storage-open'),
     change: () => ipcRenderer.invoke('desktop:storage-change', false),
-    reset: () => ipcRenderer.invoke('desktop:storage-change', true)
+    reset: () => ipcRenderer.invoke('desktop:storage-change', true),
+    downloadInfo: () => ipcRenderer.invoke('desktop:download-info'),
+    downloadChange: () => ipcRenderer.invoke('desktop:download-change', false),
+    downloadReset: () => ipcRenderer.invoke('desktop:download-change', true)
   }),
   prompt: (message, value = '') => ipcRenderer.sendSync('desktop:prompt', String(message).slice(0, 4000), String(value).slice(0, 20000)),
   updates: Object.freeze({
