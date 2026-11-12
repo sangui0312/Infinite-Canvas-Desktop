@@ -313,6 +313,52 @@ class BackendTests(unittest.TestCase):
             for upload in (gateway, litterbox, temp):
                 upload.assert_not_awaited()
 
+    def test_uploaded_media_rejects_pages_and_wrong_content(self):
+        m = self.module
+        media = self.root / 'upload-sample.mp4'
+        media.write_bytes(b'video-test-content')
+        original_client = m.httpx.AsyncClient
+        for content_type, body, accepted in (
+            ('text/html', b'<html>Download</html>', False),
+            ('application/octet-stream', b'wrong-content', False),
+            ('video/mp4', b'video-test-content', True),
+        ):
+            def handle(request):
+                self.assertNotIn('authorization', request.headers)
+                self.assertEqual(request.headers['range'], 'bytes=0-17')
+                return m.httpx.Response(206, headers={'Content-Type': content_type}, content=body)
+            transport = m.httpx.MockTransport(handle)
+            with patch.object(m.httpx, 'AsyncClient', side_effect=lambda **kwargs: original_client(transport=transport, **kwargs)):
+                if accepted:
+                    asyncio.run(m.validate_uploaded_media_url('https://media.example/video.mp4', str(media)))
+                else:
+                    with self.assertRaises(m.HTTPException):
+                        asyncio.run(m.validate_uploaded_media_url('https://media.example/video.mp4', str(media)))
+
+    def test_apimart_video_fallback_after_gateway_chain_failure(self):
+        m = self.module
+        with patch.dict(os.environ, {'CLOUD_VIDEO_UPLOAD_SERVICE': 'selfhosted'}), patch.object(m, 'local_asset_public_url', return_value=''), patch.object(m, 'output_file_from_url', return_value='test.mp4'), patch.object(m, 'upload_local_video_to_cloud', new_callable=AsyncMock) as cloud, patch.object(m, 'upload_video_to_apimart', new_callable=AsyncMock) as upstream:
+            cloud.side_effect = m.HTTPException(status_code=502, detail='private-error-marker')
+            upstream.return_value = 'https://media.example/uploaded.mp4'
+            client, provider = object(), {'id': 'apimart'}
+            result = asyncio.run(m.upload_video_for_apimart(client, provider, '/assets/test.mp4'))
+            self.assertEqual(result, upstream.return_value)
+            upstream.assert_awaited_once_with(client, provider, 'test.mp4')
+            cloud.reset_mock()
+            upstream.reset_mock()
+            cloud.side_effect = None
+            cloud.return_value = {'url': 'https://gateway.example/video.mp4'}
+            self.assertEqual(asyncio.run(m.upload_video_for_apimart(client, provider, '/assets/test.mp4')), cloud.return_value['url'])
+            upstream.assert_not_awaited()
+
+    def test_apimart_video_upload_uses_video_endpoint_and_checks_link(self):
+        m = self.module
+        client = types.SimpleNamespace(post=AsyncMock(return_value=m.httpx.Response(200, json={'data': {'url': 'https://media.example/video.mp4'}})))
+        with patch.object(m, 'apimart_upload_raw_file_payload', return_value=('test.mp4', b'video', 'video/mp4')), patch.object(m, 'video_api_root', return_value='https://api.example'), patch.object(m, 'api_headers', return_value={}), patch.object(m, 'validate_uploaded_media_url', new_callable=AsyncMock) as validate:
+            result = asyncio.run(m.upload_video_to_apimart(client, {}, 'test.mp4'))
+            self.assertEqual(client.post.call_args.args[0], 'https://api.example/v1/uploads/videos')
+            validate.assert_awaited_once_with(result, 'test.mp4')
+
     def test_gateway_config_failure_does_not_log_values_or_replace_existing_config(self):
         m = self.module
         config = Path(m.local_media_gateway_config_path())

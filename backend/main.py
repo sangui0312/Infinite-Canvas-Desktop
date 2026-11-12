@@ -8278,9 +8278,28 @@ async def prepare_apimart_video_reference(value: str) -> str:
     return output_url_for(os.path.basename(trimmed_path), "output")
 
 
+async def upload_video_to_apimart(client, provider, path: str) -> str:
+    filename, content, content_type = apimart_upload_raw_file_payload(path)
+    response = await client.post(
+        f"{video_api_root(provider)}/v1/uploads/videos",
+        headers=api_headers(json_body=False, provider=provider),
+        files={"file": (filename, content, content_type)},
+        timeout=180,
+    )
+    if response.status_code not in (200, 201):
+        raise HTTPException(status_code=response.status_code, detail="APIMart 视频上传失败")
+    url = extract_apimart_asset_url(response.json())
+    if url.startswith(("http://", "https://")):
+        await validate_uploaded_media_url(url, path)
+        return url
+    if url.startswith("asset://"):
+        return url
+    raise HTTPException(status_code=502, detail="APIMart 视频上传未返回可用地址")
+
+
 async def upload_video_for_apimart(client, provider, ref_url: str) -> str:
     """尽力把本地参考视频转换为 APIMart 可接受的 http/https 或 asset:// URL。
-    文档只公开了图片上传；如果视频上传端点不可用，会回退到 PUBLIC_BASE_URL 方案。"""
+    优先使用配置的网关，失败后使用当前平台的视频上传入口。"""
     ref_url = str(ref_url or "").strip()
     if not ref_url:
         return "ERR:空地址"
@@ -8305,27 +8324,10 @@ async def upload_video_for_apimart(client, provider, ref_url: str) -> str:
     ).strip().lower()
     selfhosted_aliases = {"selfhosted", "self-hosted", "media-gateway", "media_gateway"}
     if cloud_service not in selfhosted_aliases and str(os.getenv("APIMART_TRY_VIDEO_UPLOAD") or "").strip().lower() in {"1", "true", "yes", "on"}:
-        base_url = video_api_root(provider)
-        filename, content, content_type = apimart_upload_raw_file_payload(path)
-        upload_paths = ("/v1/uploads/videos", "/v1/uploads/files", "/v1/uploads/images")
-        for upload_path in upload_paths:
-            upload_url = f"{base_url}{upload_path}"
-            try:
-                files = {"file": (filename, content, content_type)}
-                resp = await client.post(upload_url, headers=api_headers(json_body=False, provider=provider), files=files, timeout=180)
-                if resp.status_code in (200, 201):
-                    rj = resp.json()
-                    url = extract_apimart_asset_url(rj)
-                    if valid_apimart_video_image_input(url):
-                        return url
-                    last_error = "上传响应未包含可用 URL"
-                    print(f"APIMart 视频上传返回中未找到可用 asset/url ({upload_path}): {str(rj)[:300]}")
-                    continue
-                last_error = f"{upload_path} 返回 {resp.status_code}: {resp.text[:200]}"
-                print(f"APIMart 视频上传失败 {last_error}")
-            except Exception as e:
-                last_error = f"{upload_path} 异常：{e}"
-                print(f"APIMart 视频上传异常: {last_error}")
+        try:
+            return await upload_video_to_apimart(client, provider, path)
+        except Exception as exc:
+            last_error = f"HTTP {exc.status_code}" if isinstance(exc, HTTPException) else type(exc).__name__
     # 使用当前配置的云端服务；selfhosted 会直接走自建媒体网关。
     cloud_error = ""
     try:
@@ -8335,9 +8337,14 @@ async def upload_video_for_apimart(client, provider, ref_url: str) -> str:
             return url
         cloud_error = "图床未返回可用链接"
     except HTTPException as exc:
-        cloud_error = str(exc.detail)
+        cloud_error = f"HTTP {exc.status_code}"
     except Exception as exc:
-        cloud_error = str(exc)
+        cloud_error = type(exc).__name__
+    if not last_error:
+        try:
+            return await upload_video_to_apimart(client, provider, path)
+        except Exception as exc:
+            last_error = f"HTTP {exc.status_code}" if isinstance(exc, HTTPException) else type(exc).__name__
     hint = "；".join(filter(None, [f"APIMart 上传：{last_error}" if last_error else "", f"公网图床上传：{cloud_error}" if cloud_error else ""]))
     return f"ERR:本地视频无法转换为 APIMart 可访问的公网地址（{hint}）。可配置 PUBLIC_MEDIA_BASE_URL / PUBLIC_BASE_URL，或改用公网 http/https / asset:// 视频地址；桌面版可把 media_gateway.json 放入数据目录后重启。"
 
@@ -8520,6 +8527,36 @@ def local_media_path_for_cloud_upload(ref_url: str, allowed_prefixes=("image/", 
 def local_video_path_for_cloud_upload(ref_url: str) -> str:
     return local_media_path_for_cloud_upload(ref_url, ("video/",))
 
+async def validate_uploaded_media_url(url: str, path: str) -> None:
+    """Read a bounded, unauthenticated sample to reject landing pages and wrong files."""
+    with open(path, "rb") as source:
+        expected = source.read(4096)
+    if not expected:
+        raise HTTPException(status_code=400, detail="上传文件为空")
+    try:
+        async with httpx.AsyncClient(timeout=30, follow_redirects=True) as client:
+            async with client.stream("GET", url, headers={
+                "Range": f"bytes=0-{len(expected) - 1}",
+                "Accept-Encoding": "identity",
+            }) as response:
+                if response.status_code not in (200, 206):
+                    raise HTTPException(status_code=502, detail="上传后的媒体链接无法公开访问")
+                content_type = response.headers.get("content-type", "").lower()
+                if "text/html" in content_type or "application/json" in content_type:
+                    raise HTTPException(status_code=502, detail="上传服务返回了网页或接口响应，无法作为媒体直链")
+                sample = bytearray()
+                async for chunk in response.aiter_bytes(chunk_size=len(expected)):
+                    sample.extend(chunk[:len(expected) - len(sample)])
+                    if len(sample) >= len(expected):
+                        break
+                if bytes(sample) != expected:
+                    raise HTTPException(status_code=502, detail="上传后的媒体内容与本地文件不一致")
+    except HTTPException:
+        raise
+    except Exception as exc:
+        raise HTTPException(status_code=502, detail="上传后的媒体直链校验失败") from exc
+
+
 async def upload_video_to_litterbox(path: str, source_url: str) -> Dict[str, str]:
     upload_url = os.getenv("LITTERBOX_UPLOAD_URL", "https://litterbox.catbox.moe/resources/internals/api.php").strip() or "https://litterbox.catbox.moe/resources/internals/api.php"
     time_value = os.getenv("LITTERBOX_TIME", "72h").strip() or "72h"
@@ -8531,10 +8568,11 @@ async def upload_video_to_litterbox(path: str, source_url: str) -> Dict[str, str
                 data = {"reqtype": "fileupload", "time": time_value}
                 response = await client.post(upload_url, data=data, files=files)
         if not response.is_success:
-            raise HTTPException(status_code=response.status_code, detail=f"Litterbox 上传失败：{response.text[:300]}")
+            raise HTTPException(status_code=response.status_code, detail=f"Litterbox 上传失败（HTTP {response.status_code}）")
         direct_url = response.text.strip().splitlines()[0].strip()
         if not re.match(r"^https?://", direct_url, re.I):
             raise HTTPException(status_code=502, detail=f"Litterbox 返回了无法识别的链接：{response.text[:300]}")
+        await validate_uploaded_media_url(direct_url, path)
         return {"url": direct_url, "source": source_url, "name": os.path.basename(path), "expires": time_value, "service": "litterbox"}
     except HTTPException:
         raise
@@ -8554,6 +8592,7 @@ async def upload_video_to_temp_sh(path: str, source_url: str) -> Dict[str, str]:
         direct_url = response.text.strip().splitlines()[0].strip()
         if not re.match(r"^https?://", direct_url, re.I):
             raise HTTPException(status_code=502, detail=f"Temp.sh 返回了无法识别的链接：{response.text[:300]}")
+        await validate_uploaded_media_url(direct_url, path)
         return {"url": direct_url, "source": source_url, "name": os.path.basename(path), "expires": "3 days", "service": "temp.sh"}
     except HTTPException:
         raise
@@ -8609,6 +8648,7 @@ async def upload_video_to_selfhosted(path: str, source_url: str) -> Dict[str, st
     direct_url = str(payload.get("url") or "").strip()
     if not direct_url.lower().startswith("https://"):
         raise HTTPException(status_code=502, detail="自建媒体网关未返回有效的 HTTPS 视频地址")
+    await validate_uploaded_media_url(direct_url, path)
     return {
         "url": direct_url,
         "source": source_url,
