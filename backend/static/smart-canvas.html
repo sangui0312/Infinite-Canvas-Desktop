@@ -322,10 +322,19 @@
                         <button type="button" data-image-edit-mode="outpaint"><i data-lucide="expand" class="w-3.5 h-3.5"></i><span data-i18n="canvas.modeOutpaint">Expand</span></button>
                         <button type="button" data-image-edit-mode="mask"><i data-lucide="brush" class="w-3.5 h-3.5"></i><span data-i18n="canvas.modeMask">遮罩</span></button>
                         <button type="button" data-image-edit-mode="brush"><i data-lucide="paintbrush" class="w-3.5 h-3.5"></i><span data-i18n="canvas.modeBrush">画笔</span></button>
+                        <button type="button" data-image-edit-mode="transform"><i data-lucide="rotate-cw" class="w-3.5 h-3.5"></i><span>旋转 / 镜像</span></button>
                         <button type="button" data-image-edit-mode="resize"><i data-lucide="minimize-2" class="w-3.5 h-3.5"></i><span>缩放</span></button>
                         <button type="button" data-image-edit-mode="grid"><i data-lucide="grid-3x3" class="w-3.5 h-3.5"></i><span data-i18n="canvas.modeGrid">宫格切分</span></button>
                     </div>
                     <button class="preview-icon-btn" type="button" onclick="closeImageEditor()" title="关闭" data-i18n-title="common.close"><i data-lucide="x" class="w-4 h-4"></i></button>
+                </div>
+                <div id="imageTransformTools" class="image-edit-tools">
+                    <button class="image-edit-btn secondary" type="button" onclick="transformEditImage('left')">左转 90°</button>
+                    <button class="image-edit-btn secondary" type="button" onclick="transformEditImage('right')">右转 90°</button>
+                    <button class="image-edit-btn secondary" type="button" onclick="transformEditImage('horizontal')">水平镜像</button>
+                    <button class="image-edit-btn secondary" type="button" onclick="transformEditImage('vertical')">垂直镜像</button>
+                    <button class="image-edit-btn secondary" type="button" onclick="resetTransformEditImage()">重置</button>
+                    <span id="imageTransformStatus" class="image-transform-status" data-state="loading" role="status" aria-live="polite">加载原图中</span>
                 </div>
                 <div id="imageCropTools" class="image-edit-tools crop-ratio-tools">
                     <span class="image-edit-sub">比例</span>
@@ -512,6 +521,7 @@
     <link rel="stylesheet" href="/static/css/media-cleanup.css">
     <script src="/static/js/media-cleanup.js"></script>
     <script src="/static/js/minimax-video.js"></script>
+    <script src="/static/js/image-transform.js"></script>
     <script src="/static/js/smart-canvas.js?v=2026.10.08.1791444516"></script>
     <script src="/static/js/smart-agent.js"></script>
 </body>

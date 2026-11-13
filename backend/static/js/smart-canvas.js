@@ -10708,10 +10708,12 @@ function setImageEditMode(mode, userTouched=false){
     const editKind = mediaKindForItem(currentEditImage().image || {});
     const isVideoPreview = editKind === 'video';
     if(isVideoPreview && mode !== 'preview') mode = 'preview';
+    if(imageEditMode === 'transform' && mode !== 'transform') resetTransformEditImage(true);
+    if(mode !== 'transform') document.getElementById('imageEditApplyBtn').disabled = false;
     if(userTouched) imageEditModeTouched = true;
     const prev = imageEditMode;
     if(mode !== 'brush') removeEditTextInlineEditor(true);
-    imageEditMode = ['preview','crop','outpaint','mask','brush','resize','grid'].includes(mode) ? mode : 'preview';
+    imageEditMode = ['preview','crop','outpaint','mask','brush','resize','grid','transform'].includes(mode) ? mode : 'preview';
     const cropCanvasEl = document.getElementById('cropCanvas');
     const previewStageEl = document.getElementById('previewStage');
     const editStageEl = document.getElementById('imageEditStage');
@@ -10744,6 +10746,7 @@ function setImageEditMode(mode, userTouched=false){
     cropCanvasEl.classList.toggle('mask-mode', imageEditMode === 'mask');
     cropCanvasEl.classList.toggle('brush-mode', imageEditMode === 'brush');
     cropCanvasEl.classList.toggle('resize-mode', imageEditMode === 'resize');
+    cropCanvasEl.classList.toggle('transform-mode', imageEditMode === 'transform');
     cropCanvasEl.classList.toggle('grid-mode', imageEditMode === 'grid');
     if(imageEditMode !== 'grid') clearGridGuideOverlay();
     cropCanvasEl.classList.toggle('outpaint-mode', imageEditMode === 'outpaint');
@@ -10754,6 +10757,8 @@ function setImageEditMode(mode, userTouched=false){
     document.getElementById('imageMaskTools').classList.toggle('active', imageEditMode === 'mask');
     document.getElementById('imageBrushTools').classList.toggle('active', imageEditMode === 'brush');
     document.getElementById('imageResizeTools')?.classList.toggle('active', imageEditMode === 'resize');
+    document.getElementById('imageTransformTools')?.classList.toggle('active', imageEditMode === 'transform');
+    if(imageEditMode === 'transform') beginTransformEditImage();
     document.getElementById('imageGridTools').classList.toggle('active', imageEditMode === 'grid');
     if(imageEditMode === 'grid' && gridOperationMode === 'join' && !canGridJoinCurrentNode()) gridOperationMode = 'split';
     syncGridOperationControls();
@@ -10773,7 +10778,11 @@ function setImageEditMode(mode, userTouched=false){
         ensureImageEditBaseSize(true);
         applyImageEditZoom();
         applyBtn.style.display = '';
-        if(imageEditMode === 'resize'){
+        if(imageEditMode === 'transform'){
+            document.getElementById('imageEditTitle').textContent = '旋转 / 镜像';
+            document.getElementById('imageEditSub').textContent = '使用原图生成变换后的图片';
+            applyBtn.textContent = '应用变换';
+        } else if(imageEditMode === 'resize'){
             document.getElementById('imageEditTitle').textContent = '缩放图片';
             document.getElementById('imageEditSub').textContent = '选择缩小倍数，应用会替换当前原图';
             applyBtn.innerHTML = `<i data-lucide="minimize-2" class="w-4 h-4"></i><span>应用缩放</span>`;
@@ -10801,7 +10810,7 @@ function setImageEditMode(mode, userTouched=false){
     }
     resizeEditDrawCanvas();
     if(imageEditMode === 'grid') refreshGridSplitPreview();
-    else if(imageEditMode === 'crop' || imageEditMode === 'resize' || imageEditMode === 'outpaint' || prev === 'grid') clearEditDrawing(true);
+    else if(imageEditMode === 'crop' || imageEditMode === 'resize' || imageEditMode === 'transform' || imageEditMode === 'outpaint' || prev === 'grid') clearEditDrawing(true);
     syncEditDrawingHistoryButtons();
     syncBrushToolButtons();
     syncTextToolState(true);
@@ -12637,6 +12646,7 @@ function openImageEditor(nodeId, imageIndex=0){
     refreshIcons();
 }
 function closeImageEditor(){
+    resetTransformEditImage(true, false);
     cleanupSmartLogPreviewNode();
     imageEditModal.classList.remove('open');
     document.querySelector('.image-edit-panel')?.classList.remove('video-preview-mode');
@@ -13041,7 +13051,115 @@ async function applyImageResize(){
     render();
     scheduleSave();
 }
+let transformCanvas = null;
+let transformOriginalSrc = '';
+let transformLoading = false;
+let transformSaving = false;
+let transformProcessing = false;
+let transformGeneration = 0;
+function setTransformStatus(message, state='ready'){
+    const status = document.getElementById('imageTransformStatus');
+    if(!status) return;
+    status.dataset.state = state;
+    status.textContent = message;
+}
+function setTransformControlsReady(ready){
+    document.querySelectorAll('#imageTransformTools button:not(:last-of-type)').forEach(button => { button.disabled = !ready; });
+    document.getElementById('imageEditApplyBtn').disabled = !ready;
+}
+function beginTransformEditImage(){
+    if(transformCanvas || transformLoading || !cropState) return;
+    const {node, image} = currentEditImage();
+    if(!node || !image) return;
+    const sourceUrl = displayMediaUrl(image);
+    const generation = ++transformGeneration;
+    transformLoading = true;
+    const img = document.getElementById('cropImage');
+    transformOriginalSrc = sourceUrl;
+    img.dataset.editorSrcToken = 'transform-' + generation;
+    setTransformControlsReady(false);
+    setTransformStatus('加载原图中', 'loading');
+    const original = new Image();
+    original.onload = () => {
+        if(generation !== transformGeneration || imageEditMode !== 'transform') return;
+        try {
+            transformCanvas = document.createElement('canvas');
+            transformCanvas.width = original.naturalWidth; transformCanvas.height = original.naturalHeight;
+            transformCanvas.getContext('2d').drawImage(original, 0, 0);
+            transformLoading = false;
+            setTransformControlsReady(true);
+            setTransformStatus('原图已就绪');
+            showTransformEditImage();
+        } catch(err) { transformLoading = false; transformCanvas = null; setTransformStatus('原图无法编辑，请重新上传', 'error'); }
+    };
+    original.onerror = () => { if(generation === transformGeneration){ transformLoading = false; setTransformStatus('原图加载失败，请重新上传', 'error'); } };
+    original.src = sourceUrl;
+}
+function showTransformEditImage(){
+    if(!transformCanvas) return;
+    try { document.getElementById('cropImage').src = transformCanvas.toDataURL('image/png'); }
+    catch(err) { transformCanvas = null; setTransformControlsReady(false); setTransformStatus('原图无法编辑，请重新上传', 'error'); }
+}
+async function transformEditImage(action){
+    if(!transformCanvas || transformProcessing || transformSaving) return;
+    const labels = {left:'左转 90°', right:'右转 90°', horizontal:'水平镜像', vertical:'垂直镜像'};
+    if(!labels[action]) return;
+    const generation = transformGeneration, source = transformCanvas;
+    transformProcessing = true;
+    setTransformControlsReady(false);
+    setTransformStatus(`${labels[action]}中`, 'loading');
+    try {
+        // Let the browser paint the status before processing a large original image.
+        await new Promise(resolve => requestAnimationFrame(() => setTimeout(resolve, 0)));
+        if(generation !== transformGeneration || source !== transformCanvas) return;
+        transformCanvas = transformImageCanvas(source, action);
+        showTransformEditImage();
+        if(!transformCanvas) return;
+        await document.getElementById('cropImage').decode();
+        if(generation === transformGeneration && imageEditMode === 'transform') {
+            setTransformStatus(`${labels[action]}完成`, 'success');
+        }
+    } catch(err) {
+        if(generation === transformGeneration) setTransformStatus('处理失败，请重试', 'error');
+    } finally {
+        transformProcessing = false;
+        if(generation === transformGeneration && imageEditMode === 'transform') setTransformControlsReady(Boolean(transformCanvas));
+    }
+}
+function resetTransformEditImage(discard=false, restore=true){
+    ++transformGeneration; transformLoading = false; transformCanvas = null;
+    const img = document.getElementById('cropImage');
+    if(restore && transformOriginalSrc && img) img.src = transformOriginalSrc;
+    transformOriginalSrc = '';
+    if(!discard && imageEditMode === 'transform') beginTransformEditImage();
+}
+async function applyTransformEditImage(){
+    if(!cropState || !transformCanvas || transformLoading || transformSaving || transformProcessing) return;
+    const {node, image} = currentEditImage();
+    if(!node || !image) return;
+    const generation = transformGeneration, sourceCanvas = transformCanvas, originalUrl = image.url;
+    transformSaving = true;
+    setTransformControlsReady(false);
+    try {
+        const blob = await new Promise(resolve => sourceCanvas.toBlob(resolve, 'image/png'));
+        if(!blob || generation !== transformGeneration || sourceCanvas !== transformCanvas || !cropState || currentEditImage().image?.url !== originalUrl) return;
+        const base = (image.name || 'image').replace(/\.[^.]+$/, '');
+        let file;
+        try { file = await uploadCroppedBlob(blob, `${base}_transform.png`); }
+        catch(err) { setTransformStatus('保存失败，请重试', 'error'); return; }
+        if(!file) { setTransformStatus('保存失败，请重试', 'error'); return; }
+        if(generation !== transformGeneration || sourceCanvas !== transformCanvas || !cropState || currentEditImage().image?.url !== originalUrl) return;
+        pushUndo();
+        if(!replaceEditedImage(file, {kind:'image', role:image.role || '', natural_w:transformCanvas.width, natural_h:transformCanvas.height})) return;
+        closeImageEditor(); render(); scheduleSave();
+    } finally {
+        transformSaving = false;
+        if(generation === transformGeneration && imageEditMode === 'transform') setTransformControlsReady(Boolean(transformCanvas));
+    }
+}
+
 function applyImageEdit(){
+    if(imageEditMode === 'transform') return applyTransformEditImage();
     if(imageEditMode === 'preview') return;
     if(imageEditMode === 'outpaint') return applyImageOutpaint();
     if(imageEditMode === 'mask') return applyImageMask();

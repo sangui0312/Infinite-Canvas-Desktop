@@ -1611,3 +1611,17 @@ input[type=range].smart-range::-webkit-slider-thumb { -webkit-appearance:none; w
 .smart-stitch-field { display:flex; flex-direction:column; gap:5px; min-width:0; }
 .smart-stitch-field span { color:var(--muted); font-size:10.5px; font-weight:800; }
 .smart-stitch-field input,.smart-stitch-field select { height:34px; border:1px solid var(--line); border-radius:10px; outline:none; padding:0 10px; background:var(--card-solid); color:var(--text); font-size:12px; font-weight:700; }
+
+.crop-canvas.transform-mode .crop-box { display:none; }
+.image-edit-mode { max-width:100%; overflow-x:auto; }
+.image-edit-mode button { flex-shrink:0; }
+.image-edit-head { grid-template-columns:minmax(0,1fr) minmax(0,auto) minmax(0,1fr); }
+
+.image-transform-status { display:inline-flex; align-items:center; gap:6px; max-width:100%; padding:5px 9px; border-radius:8px; font-size:11px; font-weight:700; line-height:1.4; color:#64748b; background:rgba(100,116,139,.09); overflow-wrap:anywhere; }
+.image-transform-status::before { content:'✓'; flex:0 0 auto; font-size:12px; line-height:1; }
+.image-transform-status[data-state="loading"]::before { content:''; width:11px; height:11px; box-sizing:border-box; border:2px solid currentColor; border-right-color:transparent; border-radius:50%; animation:image-transform-spin .8s linear infinite; }
+.image-transform-status[data-state="success"] { color:#168047; background:rgba(34,197,94,.12); }
+.image-transform-status[data-state="error"] { color:#b42318; background:rgba(239,68,68,.12); }
+.image-transform-status[data-state="error"]::before { content:'!'; font-weight:900; }
+@keyframes image-transform-spin { to { transform:rotate(360deg); } }
+@media (prefers-reduced-motion:reduce) { .image-transform-status[data-state="loading"]::before { animation:none; } }
