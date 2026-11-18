@@ -340,6 +340,7 @@ let settings = {
     videoProvider:'',
     videoModel:'',
     videoDuration:5,
+    flashAspectChosen:false, flashDurationChosen:false,
     videoDurationMode:'auto',
     videoAspect:'16:9',
     videoResolution:'',
@@ -2617,6 +2618,11 @@ function renderVideoModelControl(models){
         </div>
     </div>`;
 }
+function smartFlashDefaults(){
+    if(!isApimartSeedanceFlash(settings.videoProvider,settings.videoModel)) return {};
+    const n = activeComposerNode() || selectedNode();
+    return SeedanceFlashOptions.defaults(settings,manualSmartVideoLink(settings) || (n && videoRefsOnly(visibleReferenceImagesFor(n)).length));
+}
 function renderVideoDurationControl(){
     const v = Math.max(1, Math.min(60, Number(settings.videoDuration) || 5));
     const auto = settings.videoDurationMode !== 'manual';
@@ -2624,16 +2630,17 @@ function renderVideoDurationControl(){
     const profile=flash ? {min:4,max:30} : isSmartH3Video() && MiniMaxVideo.profile(settings.videoModel);
     const quick = [3, 4, 5, 6, 8, 10, 12, 15, ...(flash ? [20, 30] : [])].filter(n=>!profile || (n>=profile.min && n<=profile.max));
     const title = auto ? escapeHtml(tr('smart.videoDurationAutoTip')) : escapeHtml(tr('smart.videoDurationTip'));
-    const label = flash && settings.videoDurationMode === 'model' ? '模型自动' : auto ? escapeHtml(tr('smart.videoDurationAutoShort')) : String(v) + 's';
+    const modelAuto = flash && (settings.videoDurationMode === 'model' || smartFlashDefaults().modelDuration);
+    const label = modelAuto ? '模型自动' : auto ? escapeHtml(tr('smart.videoDurationAutoShort')) : String(v) + 's';
     const quickHtml = quick.map(n => '<button type="button" class="duration-option ' + (!auto && n === v ? 'active' : '') + '" data-smart-param="videoDuration" data-smart-value="' + n + '">' + n + 's</button>').join('');
     return '<div class="smart-control duration-control" title="' + title + '">' +
         '<button class="smart-pill" type="button"><i data-lucide="timer"></i><span>' + label + '</span></button>' +
         '<div class="smart-popover compact-popover">' +
             '<div class="smart-popover-title">' + escapeHtml(tr('smart.videoDuration')) + '</div>' +
             '<div class="model-list duration-mode-list">' +
-                '<button type="button" class="direct-option ' + (auto && settings.videoDurationMode !== 'model' ? 'active' : '') + '" data-smart-duration-mode="auto"><span>' + escapeHtml(tr('smart.videoDurationAuto')) + '</span></button>' +
+                '<button type="button" class="direct-option ' + (auto && !modelAuto ? 'active' : '') + '" data-smart-duration-mode="auto"><span>' + escapeHtml(tr('smart.videoDurationAuto')) + '</span></button>' +
                 '<button type="button" class="direct-option ' + (!auto ? 'active' : '') + '" data-smart-duration-mode="manual"><span>' + escapeHtml(tr('smart.videoDurationManual')) + '</span></button>' +
-                (flash ? '<button type="button" class="direct-option ' + (settings.videoDurationMode === 'model' ? 'active' : '') + '" data-smart-duration-mode="model"><span>模型自动时长（按 30 秒预扣）</span></button>' : '') +
+                (flash ? '<button type="button" class="direct-option ' + (modelAuto ? 'active' : '') + '" data-smart-duration-mode="model"><span>模型自动时长（按 30 秒预扣）</span></button>' : '') +
             '</div>' +
             '<div class="duration-grid">' + quickHtml + '</div>' +
             '<label class="duration-custom"><span>' + escapeHtml(tr('smart.custom')) + '</span>' +
@@ -2669,7 +2676,7 @@ function renderVideoAspectControl(){
         ['16:9','16:9'], ['9:16','9:16'], ['1:1','1:1'], ['4:3','4:3'], ['3:4','3:4'],
         ['21:9','21:9'], ...(!isSmartH3Video() ? [['9:21','9:21']] : []), ['keep_ratio', tr('smart.videoAspectKeep')], ['adaptive', tr('smart.videoAspectAdaptive')]
     ];
-    const value = settings.videoAspect || '16:9';
+    const value = smartFlashDefaults().adaptive ? 'adaptive' : settings.videoAspect || '16:9';
     const labelMap = Object.fromEntries(options);
     return `<div class="smart-control aspect-control">
         <button class="smart-pill" type="button"><i data-lucide="scan"></i><span>${escapeHtml(labelMap[value] || value)}</span></button>
@@ -3710,6 +3717,7 @@ function setDynamicSetting(key, value){
     const layoutKeys = new Set(['provider_id','model','resolution','ratio','outputFormat','imageVersion','complexity','svgModel','svgEffort','msgenModel','msCustomModel','msResolution','msRatio','videoProvider','videoModel','videoAspect','videoResolution','comfyMode','comfyWorkflow','quality','count','enhanceUpscaleRes','editUpscaleRes','jimengUpscaleRes','rhConfigKey','rhPayment','rhInstanceType']);
     settings[key] = numericKeys.has(key) && value !== '' ? Number(value) : value;
     if(GptImage26.isModel(settings.model) && key === 'outputFormat' && value === 'gif'){settings.ratio='auto';settings.resolution='1k';}
+    if(key === 'videoAspect') settings.flashAspectChosen = true;
     if(key === 'videoDuration') settings.videoDurationMode = 'manual';
     if(key === 'provider_id') settings.model = '';
     if(key === 'outputFormat' && isApimartProviderId(settings.provider_id) && isApimartGptImage25Model(settings.model) && settings.outputFormat === 'jpeg' && settings.background === 'transparent') settings.background = 'auto';
@@ -3802,6 +3810,7 @@ function bindDynamicParams(){
         btn.onclick = event => {
             event.preventDefault();
             event.stopPropagation();
+            settings.flashDurationChosen = true;
             settings.videoDurationMode = ['manual','model'].includes(btn.dataset.smartDurationMode) ? btn.dataset.smartDurationMode : 'auto';
             persistActiveSmartSettings();
             renderDynamicParams();
@@ -16825,7 +16834,8 @@ async function runApiVideoGeneration(prompt, refs, runSettings=settings){
         const videoRefItems = videoRefsOnly(uploadedRefs);
         const refVideos = manualVideo ? manualSmartMediaLinks(runSettings).map(item => item.url).filter(Boolean) : videoRefItems.map(ref => effUrl(ref)).filter(Boolean);
         const flash = isApimartSeedanceFlash(runSettings.videoProvider, runSettings.videoModel);
-        const duration = flash && (runSettings.videoFlashMode === 'edit' || runSettings.videoDurationMode === 'model') ? -1 : await smartAutoVideoDuration(videoRefItems, runSettings, manualVideo);
+        const defaults = flash ? SeedanceFlashOptions.defaults(runSettings,refVideos.length) : {};
+        const duration = flash && (defaults.modelDuration || runSettings.videoFlashMode === 'edit' || runSettings.videoDurationMode === 'model') ? -1 : await smartAutoVideoDuration(videoRefItems, runSettings, manualVideo);
         const refAudios = audioRefsOnly(uploadedRefs).map(ref => effUrl(ref)).filter(Boolean);
         if(mismatchedAsset) toast('部分认证素材属于其它平台，已回退为普通素材。切换到对应平台的视频接口才能用 asset:// 认证地址。');
         const payload = {
@@ -16833,7 +16843,7 @@ async function runApiVideoGeneration(prompt, refs, runSettings=settings){
             provider_id: runSettings.videoProvider || 'comfly',
             model: runSettings.videoModel || 'veo3-fast',
             duration,
-            aspect_ratio: runSettings.videoAspect || '16:9',
+            aspect_ratio: defaults.adaptive ? 'adaptive' : runSettings.videoAspect || '16:9',
             resolution: runSettings.videoResolution || '',
             images: refImages,
             videos: refVideos,

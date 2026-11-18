@@ -9772,6 +9772,7 @@ function renderVideoBody(node){
     const ordered = orderedSources(node, inputSources);
     const mediaInputs = ordered.filter(src => src.refs?.some(ref => ['image','video','audio'].includes(mediaKindForRef(ref))));
     const promptInputs = ordered.filter(src => src.prompt && !src.refs?.length);
+    const flashDefaults = () => isApimartSeedanceFlash(node.apiProvider,node.model) ? SeedanceFlashOptions.defaults(node,manualVideoUrlForNode(node) || mediaInputs.some(src=>src.refs.some(ref=>mediaKindForRef(ref)==="video"))) : {};
     const autoDuration = node.videoDurationMode !== 'manual';
     sanitizeVideoNodeProviderModel(node);
     node.model = node.model || 'veo3-fast';
@@ -9791,7 +9792,7 @@ function renderVideoBody(node){
                 <select class="select-lite video-model" style="flex:2">${videoModelOptions(node.model, node.apiProvider)}</select>
             </div>
             ${isApimartSeedanceFlash(node.apiProvider,node.model) ? '<div class="gen-settings-row" style="flex-wrap:wrap">'+SeedanceFlashOptions.controls(node)+'</div>' : ''}
-            ${isApimartSeedanceFlash(node.apiProvider,node.model) ? `<div class="gen-settings-row"><select class="select-lite video-flash-mode" title="视频编辑跟随源视频时长，按 30 秒预扣">${Object.entries({auto:'自动识别',reference:'参考生成',edit:'视频编辑',extend:'视频延长'}).map(([v,l])=>`<option value="${v}" ${(node.videoFlashMode || 'auto')===v?'selected':''}>${l}</option>`).join('')}</select><button type="button" class="setting-check ${node.videoDurationMode === 'model' ? 'active' : ''}" data-flash-model-duration title="按 30 秒预扣，完成后按实际用量结算">模型自动时长</button></div>` : ''}
+            ${isApimartSeedanceFlash(node.apiProvider,node.model) ? `<div class="gen-settings-row"><select class="select-lite video-flash-mode" title="视频编辑跟随源视频时长，按 30 秒预扣">${Object.entries({auto:'自动识别',reference:'参考生成',edit:'视频编辑',extend:'视频延长'}).map(([v,l])=>`<option value="${v}" ${(node.videoFlashMode || 'auto')===v?'selected':''}>${l}</option>`).join('')}</select><button type="button" class="setting-check ${(flashDefaults().modelDuration || node.videoDurationMode === 'model') ? 'active' : ''}" data-flash-model-duration title="按 30 秒预扣，完成后按实际用量结算">模型自动时长</button></div>` : ''}
             <div class="gen-settings-row">
                 <label class="field" style="flex:1">
                     <div class="setting-title" style="display:flex;align-items:center;justify-content:space-between;gap:6px">
@@ -9846,7 +9847,7 @@ function renderVideoBody(node){
     const resolutionSelect = wrap.querySelector('.video-resolution');
     providerSelect.value = node.apiProvider;
     durationSelect.value = String(node.duration || 5);
-    aspectSelect.value = node.aspectRatio || '16:9';
+    aspectSelect.value = flashDefaults().adaptive ? 'adaptive' : node.aspectRatio || '16:9';
     const syncH3AspectControl = () => {
         const profile=isCanvasH3Video(node) && MiniMaxVideo.profile(node.model);
         if(profile?.model==='MiniMax-H3-Max' && node.resolution==='1080p') node.watermark=false;
@@ -9905,13 +9906,13 @@ function renderVideoBody(node){
     };
     SeedanceFlashOptions.bind(wrap,node,scheduleSave);
     const flashMode = wrap.querySelector('.video-flash-mode');
-    if(flashMode) flashMode.onchange = e => { e.stopPropagation(); node.videoFlashMode=e.target.value; scheduleSave(); };
+    if(flashMode) flashMode.onchange = e => { e.stopPropagation(); node.videoFlashMode=e.target.value; scheduleSave(); refreshNodes([node.id]); };
     const flashAuto = wrap.querySelector('[data-flash-model-duration]');
-    if(flashAuto) flashAuto.onclick = e => { e.stopPropagation(); node.videoDurationMode=node.videoDurationMode === 'model' ? 'manual' : 'model'; scheduleSave(); refreshNodes([node.id]); };
+    if(flashAuto) flashAuto.onclick = e => { e.stopPropagation(); node.videoDurationMode=(flashDefaults().modelDuration || node.videoDurationMode === 'model') ? 'manual' : 'model'; node.flashDurationChosen=true; scheduleSave(); refreshNodes([node.id]); };
     const durationMode = wrap.querySelector('[data-video-duration-mode]');
     durationMode.onclick = e => {
         e.stopPropagation();
-        node.videoDurationMode = node.videoDurationMode === 'manual' ? 'auto' : 'manual';
+        node.flashDurationChosen=true; node.videoDurationMode = node.videoDurationMode === 'manual' ? 'auto' : 'manual';
         refreshNodes([node.id]);
         scheduleSave();
     };
@@ -9924,7 +9925,7 @@ function renderVideoBody(node){
         scheduleSave();
     };
     durationSelect.onblur = e => { e.target.value = String(Math.max(1, Math.min(60, Number(node.duration || 5)))); };
-    aspectSelect.onchange = e => { e.stopPropagation(); node.aspectRatio = e.target.value; scheduleSave(); };
+    aspectSelect.onchange = e => { e.stopPropagation(); node.flashAspectChosen=true; node.aspectRatio = e.target.value; scheduleSave(); };
     resolutionSelect.onchange = e => { e.stopPropagation(); node.resolution = e.target.value; if(node.model?.toLowerCase()==='minimax-h3-max' && node.resolution==='1080p') node.watermark=false; syncH3AspectControl(); scheduleSave(); };
     wrap.querySelectorAll('[data-video-toggle]').forEach(btn => {
         btn.onmousedown = e => e.stopPropagation();
@@ -10630,7 +10631,8 @@ async function runVideoNode(nodeId, opts={}){
     if(node.useFrameRoles && refs[1]) refs[1] = {...refs[1], role:'last_frame'};
     if(!prompt){ alert(tr('canvas.videoNeedsPrompt')); return; }
     let duration = Math.max(1, Math.min(60, Number(node.duration) || 5));
-    if(node.videoDurationMode !== 'manual'){
+    const effective = isApimartSeedanceFlash(node.apiProvider,node.model) ? SeedanceFlashOptions.defaults(node,manualVideoUrlForNode(node) || videoRefs.length) : {};
+    if(!effective.modelDuration && node.videoDurationMode !== 'manual'){
         const durationRef = manualVideoUrlForNode(node) || videoRefs[0] || '';
         if(durationRef) duration = await canvasAutoVideoDuration(durationRef, duration, videoRefs[0]?.name || 'video');
         if(duration !== Number(node.duration || 5)){
@@ -10640,7 +10642,7 @@ async function runVideoNode(nodeId, opts={}){
         }
     }
     const flash = isApimartSeedanceFlash(node.apiProvider,node.model);
-    if(flash && (node.videoFlashMode === 'edit' || node.videoDurationMode === 'model')) duration = -1;
+    if(flash && (effective.modelDuration || node.videoFlashMode === 'edit' || node.videoDurationMode === 'model')) duration = -1;
     let out = outputForNode(node, 460);
     const pendingId = uid('p');
     const run = runSnapshot(node, prompt, refs);
@@ -10657,7 +10659,7 @@ async function runVideoNode(nodeId, opts={}){
                 provider_id:resolveVideoProviderId(node.apiProvider || 'comfly'),
                 model:node.model || 'veo3-fast',
                 duration,
-                aspect_ratio:node.aspectRatio || '16:9',
+                aspect_ratio:effective.adaptive ? 'adaptive' : node.aspectRatio || '16:9',
                 resolution:node.resolution || '',
                 images:refs,
                 videos:manualVideoUrlForNode(node)

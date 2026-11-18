@@ -1,4 +1,12 @@
 window.SeedanceFlashOptions = {
+    defaults(s, hasVideo) {
+        const auto = !!hasVideo && (s.videoFlashMode || 'auto') === 'auto';
+        const aspect = s.videoAspect ?? s.aspectRatio;
+        return {
+            adaptive: auto && !s.flashAspectChosen && (!aspect || aspect === '16:9') && s.videoDurationMode !== 'manual',
+            modelDuration: auto && !s.flashDurationChosen && (!s.videoDurationMode || s.videoDurationMode === 'auto')
+        };
+    },
     controls(s) {
         const seed = Number.isSafeInteger(s.videoFlashSeed) ? s.videoFlashSeed : '';
         return `<label>输出格式 <select data-flash-field="videoFlashFormat"><option>mp4</option><option ${s.videoFlashFormat==='mov'?'selected':''}>mov</option></select></label>
