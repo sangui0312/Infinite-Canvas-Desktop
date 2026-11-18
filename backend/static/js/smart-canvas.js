@@ -2620,18 +2620,20 @@ function renderVideoModelControl(models){
 function renderVideoDurationControl(){
     const v = Math.max(1, Math.min(60, Number(settings.videoDuration) || 5));
     const auto = settings.videoDurationMode !== 'manual';
-    const profile=isSmartH3Video() && MiniMaxVideo.profile(settings.videoModel);
-    const quick = [3, 4, 5, 6, 8, 10, 12, 15].filter(n=>!profile || (n>=profile.min && n<=profile.max));
+    const flash=isApimartSeedanceFlash(settings.videoProvider, settings.videoModel);
+    const profile=flash ? {min:4,max:30} : isSmartH3Video() && MiniMaxVideo.profile(settings.videoModel);
+    const quick = [3, 4, 5, 6, 8, 10, 12, 15, ...(flash ? [20, 30] : [])].filter(n=>!profile || (n>=profile.min && n<=profile.max));
     const title = auto ? escapeHtml(tr('smart.videoDurationAutoTip')) : escapeHtml(tr('smart.videoDurationTip'));
-    const label = auto ? escapeHtml(tr('smart.videoDurationAutoShort')) : String(v) + 's';
+    const label = flash && settings.videoDurationMode === 'model' ? '模型自动' : auto ? escapeHtml(tr('smart.videoDurationAutoShort')) : String(v) + 's';
     const quickHtml = quick.map(n => '<button type="button" class="duration-option ' + (!auto && n === v ? 'active' : '') + '" data-smart-param="videoDuration" data-smart-value="' + n + '">' + n + 's</button>').join('');
     return '<div class="smart-control duration-control" title="' + title + '">' +
         '<button class="smart-pill" type="button"><i data-lucide="timer"></i><span>' + label + '</span></button>' +
         '<div class="smart-popover compact-popover">' +
             '<div class="smart-popover-title">' + escapeHtml(tr('smart.videoDuration')) + '</div>' +
             '<div class="model-list duration-mode-list">' +
-                '<button type="button" class="direct-option ' + (auto ? 'active' : '') + '" data-smart-duration-mode="auto"><span>' + escapeHtml(tr('smart.videoDurationAuto')) + '</span></button>' +
+                '<button type="button" class="direct-option ' + (auto && settings.videoDurationMode !== 'model' ? 'active' : '') + '" data-smart-duration-mode="auto"><span>' + escapeHtml(tr('smart.videoDurationAuto')) + '</span></button>' +
                 '<button type="button" class="direct-option ' + (!auto ? 'active' : '') + '" data-smart-duration-mode="manual"><span>' + escapeHtml(tr('smart.videoDurationManual')) + '</span></button>' +
+                (flash ? '<button type="button" class="direct-option ' + (settings.videoDurationMode === 'model' ? 'active' : '') + '" data-smart-duration-mode="model"><span>模型自动时长（按 30 秒预扣）</span></button>' : '') +
             '</div>' +
             '<div class="duration-grid">' + quickHtml + '</div>' +
             '<label class="duration-custom"><span>' + escapeHtml(tr('smart.custom')) + '</span>' +
@@ -2696,9 +2698,25 @@ function renderVideoResolutionControl(){
     </div>`;
 }
 function videoResolutionOptions(providerId, model){
+    if(isApimartSeedanceFlash(providerId, model)) return [['','默认 480P'], ['480p','480P'], ['720p','720P']];
     const profile=isApimartProviderId(providerId) && MiniMaxVideo.profile(model);
     if(profile) return [['',tr('smart.videoResAuto')],...profile.resolutions.map(v=>[v,v.toUpperCase()])];
     return [['', tr('smart.videoResAuto')], ['480p','480P'], ['720p','720P'], ['768p','768P'], ['1080p','1080P'], ['2k','2K'], ['4k','4K']];
+}
+function isApimartSeedanceFlash(providerId, model){
+    return isApimartProviderId(providerId) && ['seedance-2-5-flash','doubao-seedance-2-5-flash'].includes(String(model || '').trim().toLowerCase());
+}
+function renderSmartFlashFields(){
+    const format = settings.videoFlashFormat === 'mov' ? 'mov' : 'mp4';
+    const seed = Number.isSafeInteger(settings.videoFlashSeed) ? settings.videoFlashSeed : '';
+    return `<div class="smart-control">
+        <button class="smart-pill param-menu-pill" type="button">输出格式 · ${format.toUpperCase()}<i class="pill-caret" data-lucide="chevron-down" aria-hidden="true"></i></button>
+        <div class="smart-popover compact-popover"><div class="model-list">
+            ${['mp4','mov'].map(v => `<button class="direct-option ${format === v ? 'active' : ''}" type="button" data-smart-param="videoFlashFormat" data-smart-value="${v}">${v.toUpperCase()}</button>`).join('')}
+        </div></div></div>
+        ${renderVideoToggleControl('videoFlashCheck','内容审核')}
+        ${renderVideoToggleControl('videoFlashSearch','联网搜索')}
+        <label class="num-compact"><span class="num-label">随机种子</span><input type="number" step="1" placeholder="随机" data-flash-field="videoFlashSeed" value="${seed}"></label>`;
 }
 function renderVideoToggleControl(key, label){
     const on = !!settings[key];
@@ -2917,9 +2935,9 @@ function renderApiParams(){
         ${renderProviderControl(providers)}
         ${renderModelControl(models)}
         ${renderSizePickerControl('', true)}
+        ${renderCountVisualControl()}
         ${renderQualityControl()}
         ${renderApimartOutputControls()}
-        ${renderCountVisualControl()}
         ${isJimengProviderId(settings.provider_id) ? renderJimengUpscaleControl() : ''}
     `;
 }
@@ -2938,21 +2956,25 @@ function renderApiVideoParams(){
     const models = filterJimengVideoModels(providerVideoModels(settings.videoProvider));
     if(!settings.videoModel || !models.includes(settings.videoModel)) settings.videoModel = models[0] || 'veo3-fast';
     if(isSmartH3Video() && settings.videoModel.toLowerCase()==='minimax-h3-max' && settings.videoResolution==='1080p') settings.videoWatermark=false;
+    const flash = isApimartSeedanceFlash(settings.videoProvider, settings.videoModel);
+    const secondaryToggles = `${!isSmartH3Video() ? renderVideoToggleControl('videoEnableUpsample', tr('smart.videoUpsample')) : ''}
+        ${!isSmartH3Video() ? renderVideoToggleControl('videoGenerateAudio', tr('smart.videoGenerateAudio')) : ''}
+        ${!isSmartH3Video() ? renderVideoToggleControl('videoCameraFixed', tr('smart.videoCameraFixed')) : ''}
+        ${renderVideoToggleControl('videoWatermark', tr('smart.videoWatermark'))}`;
     dynamicParams.innerHTML = `
         ${renderVideoProviderControl(providers)}
         ${renderVideoModelControl(models)}
+        ${flash ? `<div class="smart-control"><button class="smart-pill" type="button">${({auto:'自动识别',reference:'参考生成',edit:'视频编辑',extend:'视频延长'})[settings.videoFlashMode || 'auto'] || '自动识别'}</button><div class="smart-popover compact-popover"><div class="smart-popover-title">任务类型</div><div class="model-list">${Object.entries({auto:'自动识别',reference:'参考生成',edit:'视频编辑',extend:'视频延长'}).map(([v,l])=>`<button type="button" class="direct-option" data-smart-param="videoFlashMode" data-smart-value="${v}">${l}</button>`).join('')}</div><div class="muted-note">编辑跟随源视频时长，按 30 秒预扣</div></div></div>` : ''}
+        ${renderVideoDurationControl()}
         ${renderVideoResolutionControl()}
         ${renderVideoAspectControl()}
-        ${renderVideoDurationControl()}
-        ${renderVideoToggleControl('videoEnhancePrompt', tr('smart.videoEnhancePrompt'))}
-        ${!isSmartH3Video() ? renderVideoToggleControl('videoEnableUpsample', tr('smart.videoUpsample')) : ''}
-        ${!isSmartH3Video() ? renderVideoToggleControl('videoGenerateAudio', tr('smart.videoGenerateAudio')) : ''}
-        ${!isSmartH3Video() ? renderVideoToggleControl('videoCameraFixed', tr('smart.videoCameraFixed')) : ''}
-        ${renderVideoToggleControl('videoWatermark', tr('smart.videoWatermark'))}
         ${renderVideoToggleControl('videoMultimodal', tr('smart.videoMultimodal'))}
         ${renderVideoToggleControl('videoUseFrameRoles', tr('smart.videoUseFrameRoles'))}
         ${!isSmartH3Video() ? renderVideoToggleControl('videoReturnLastFrame', tr('smart.videoReturnLastFrame')) : ''}
         ${isJimengProviderId(settings.videoProvider) ? '' : renderVideoTrustedAssetControl()}
+        ${renderVideoToggleControl('videoEnhancePrompt', tr('smart.videoEnhancePrompt'))}
+        ${flash ? renderSmartFlashFields() : ''}
+        ${secondaryToggles.trim() ? `<div class="smart-control"><button class="smart-pill param-menu-pill" type="button">更多参数<i class="pill-caret" data-lucide="chevron-down" aria-hidden="true"></i></button><div class="smart-popover compact-popover"><div class="flash-toggle-grid">${secondaryToggles}</div></div></div>` : ''}
     `;
 }
 
@@ -3748,8 +3770,22 @@ function markControlInteracting(el){
     if(ctrl && !ctrl.classList.contains('pinned')) ctrl.classList.add('interacting');
 }
 function bindDynamicParams(){
+    SeedanceFlashOptions.bind(dynamicParams,settings,()=>{persistActiveSmartSettings();scheduleSave();});
     dynamicParams.querySelectorAll('.smart-control').forEach(ctrl => {
         // 悬浮态的多选：鼠标移出整个控件（含上方弹层，弹层是 DOM 子节点）才解除，途中点参数不收起。
+        const fitPopover = () => {
+            const menu = ctrl.querySelector(':scope > .smart-popover');
+            const bounds = composer.getBoundingClientRect();
+            if(!menu || !bounds.width || !composer.offsetWidth) return;
+            const scale = bounds.width / composer.offsetWidth;
+            const start = (ctrl.getBoundingClientRect().left - bounds.left) / scale;
+            const half = menu.offsetWidth / 2;
+            const center = Math.min(composer.offsetWidth - half - 4, Math.max(half + 4, start + ctrl.offsetWidth / 2));
+            menu.style.left = (center - start) + 'px';
+        };
+        ctrl.onpointerenter = fitPopover;
+        ctrl.onfocusin = fitPopover;
+        ctrl.addEventListener('click', fitPopover, true);
         ctrl.onmouseleave = () => ctrl.classList.remove('interacting');
     });
     dynamicParams.querySelectorAll('.smart-control > .smart-pill').forEach(pill => {
@@ -3766,7 +3802,7 @@ function bindDynamicParams(){
         btn.onclick = event => {
             event.preventDefault();
             event.stopPropagation();
-            settings.videoDurationMode = btn.dataset.smartDurationMode === 'manual' ? 'manual' : 'auto';
+            settings.videoDurationMode = ['manual','model'].includes(btn.dataset.smartDurationMode) ? btn.dataset.smartDurationMode : 'auto';
             persistActiveSmartSettings();
             renderDynamicParams();
             scheduleSave();
@@ -3778,7 +3814,7 @@ function bindDynamicParams(){
             event.stopPropagation();
             markControlInteracting(btn);
             setDynamicSetting(btn.dataset.smartParam, btn.dataset.smartValue);
-            if(btn.dataset.smartParam === 'videoDuration') renderDynamicParams();
+            if(['videoDuration','videoFlashMode','videoFlashFormat'].includes(btn.dataset.smartParam)) renderDynamicParams();
         };
     });
     dynamicParams.querySelectorAll('[data-size-scope]').forEach(btn => {
@@ -16788,7 +16824,8 @@ async function runApiVideoGeneration(prompt, refs, runSettings=settings){
         const manualVideo = manualSmartVideoLink(runSettings)?.url || '';
         const videoRefItems = videoRefsOnly(uploadedRefs);
         const refVideos = manualVideo ? manualSmartMediaLinks(runSettings).map(item => item.url).filter(Boolean) : videoRefItems.map(ref => effUrl(ref)).filter(Boolean);
-        const duration = await smartAutoVideoDuration(videoRefItems, runSettings, manualVideo);
+        const flash = isApimartSeedanceFlash(runSettings.videoProvider, runSettings.videoModel);
+        const duration = flash && (runSettings.videoFlashMode === 'edit' || runSettings.videoDurationMode === 'model') ? -1 : await smartAutoVideoDuration(videoRefItems, runSettings, manualVideo);
         const refAudios = audioRefsOnly(uploadedRefs).map(ref => effUrl(ref)).filter(Boolean);
         if(mismatchedAsset) toast('部分认证素材属于其它平台，已回退为普通素材。切换到对应平台的视频接口才能用 asset:// 认证地址。');
         const payload = {
@@ -16811,6 +16848,7 @@ async function runApiVideoGeneration(prompt, refs, runSettings=settings){
             return_last_frame: Boolean(runSettings.videoReturnLastFrame),
             trusted_asset: useAssetUris
         };
+        if(flash) Object.assign(payload, SeedanceFlashOptions.payload(runSettings), {omni_reference_task_type:runSettings.videoFlashMode || 'auto'});
         if(isSmartH3Video(runSettings)) MiniMaxVideo.validate(runSettings.videoModel,payload,{images:refImages,videos:refVideos,audios:refAudios});
         const result = await fetch('/api/canvas-video', {
             method:'POST',

@@ -131,6 +131,16 @@ class HostTests(unittest.IsolatedAsyncioTestCase):
             await self.host["generate"](self.spec(kind="video", model="minimax-h3", settings={"duration": 4, "enable_upsample": True}), self.observer)
         self.assertEqual(len(self.calls), 1)
 
+    async def test_flash_video_contract_and_edit_parameters(self):
+        self.provider['video_models'].append('seedance-2-5-flash')
+        cap = self.host['capabilities']('mock', 'seedance-2-5-flash', 'video')
+        self.assertEqual(cap['resolutions'], ['480p', '720p'])
+        self.assertIn(30, cap['durations'])
+        self.assertIn(-1, cap['durations'])
+        self.assertIn('edit', cap['settings']['omni_reference_task_type'])
+        settings = normalize_generation({'engine':'api', 'apiKind':'video', 'videoModel':'seedance-2-5-flash', 'videoFlashMode':'edit', 'videoDuration':5, 'videoAspect':'16:9'}, 'video')
+        self.assertEqual((settings['omni_reference_task_type'], settings['duration'], settings['ratio']), ('edit', -1, 'adaptive'))
+
     async def test_max_contract_and_1080p_watermark_constraint(self):
         self.provider['video_models'].append('minimax-h3-max')
         cap=self.host['capabilities']('mock','minimax-h3-max','video')

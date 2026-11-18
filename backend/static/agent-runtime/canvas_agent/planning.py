@@ -127,7 +127,7 @@ def validate_settings(host, step, refs):
     if settings.get("transparent_background") and not cap.get("transparent_background"):
         raise PlanError("模型不支持透明背景。")
     supported = cap.get("settings", {})
-    for key in ("quality", "complexity", "svg", "seed", "fps", "version", "background", "output_format", "output_compression", "watermark", "return_last_frame", "generate_audio", "multimodal", "use_frame_roles", "camerafixed", "trusted_asset", "enhance_prompt", "enable_upsample"):
+    for key in ("quality", "complexity", "svg", "seed", "fps", "version", "background", "output_format", "output_compression", "watermark", "return_last_frame", "generate_audio", "multimodal", "use_frame_roles", "camerafixed", "trusted_asset", "enhance_prompt", "enable_upsample", "omni_reference_task_type", "nsfw_check", "web_search"):
         if key in settings:
             if settings[key] in (None, "") or (key == "quality" and settings[key] == "auto" and key not in supported):
                 settings.pop(key, None)
@@ -266,7 +266,7 @@ def validate_plan(raw, request, snapshot, host):
                         raise PlanError("生成参数无效。")
                     if host.get("normalize_generation"):
                         supplied = host["normalize_generation"](supplied, kind)
-                    allowed_settings = {"ratio", "resolution", "duration", "size_mode", "sizeMode", "transparent_background", "quality", "complexity", "svg", "seed", "fps", "version", "background", "output_format", "output_compression", "watermark", "return_last_frame", "generate_audio", "multimodal", "use_frame_roles", "camerafixed", "trusted_asset", "enhance_prompt", "enable_upsample"}
+                    allowed_settings = {"ratio", "resolution", "duration", "size_mode", "sizeMode", "transparent_background", "quality", "complexity", "svg", "seed", "fps", "version", "background", "output_format", "output_compression", "watermark", "return_last_frame", "generate_audio", "multimodal", "use_frame_roles", "camerafixed", "trusted_asset", "enhance_prompt", "enable_upsample", "omni_reference_task_type", "nsfw_check", "web_search"}
                     if set(supplied) - allowed_settings:
                         raise PlanError("包含未允许的生成参数。")
                     same_model = step["provider_id"] == generation.get("provider_id") and step["model"] == generation.get("model")

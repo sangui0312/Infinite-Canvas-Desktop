@@ -49,6 +49,16 @@ def normalize_generation(settings, kind=None):
             result["provider_id"] = result["videoProvider"]
         if result.get("videoModel"):
             result["model"] = result["videoModel"]
+        if str(result.get("model", "")).lower() in ("seedance-2-5-flash", "doubao-seedance-2-5-flash"):
+            for ui, field in (("videoFlashFormat", "output_format"), ("videoFlashCheck", "nsfw_check"), ("videoFlashSearch", "web_search"), ("videoFlashSeed", "seed")):
+                if raw.get(ui) is not None:
+                    result[field] = raw[ui]
+            if raw.get("videoFlashMode"):
+                result["omni_reference_task_type"] = raw["videoFlashMode"]
+            if raw.get("videoDurationMode") == "model" or raw.get("videoFlashMode") == "edit":
+                result["duration"] = -1
+            if raw.get("videoFlashMode") in ("edit", "extend"):
+                result["ratio"] = "adaptive"
     if result.get("ratio") == "source":
         result["size_mode"] = "source"
         result.pop("ratio")
@@ -142,6 +152,8 @@ def create_host(module, canvas_ops):
                 cap.update(ratios=["21:9", "16:9", "4:3", "1:1", "3:4", "9:16", "adaptive"], resolutions=["768p", "2k"], durations=list(range(4, 16)), max_references=9, recoverable=True)
             elif apimart and name in ("veo3.1-fast", "veo3.1-quality", "veo3.1-lite"):
                 cap.update(ratios=["16:9", "9:16"], resolutions=["720p", "1080p", "4k"], durations=list(range(4, 9)), max_references=0 if name.endswith("lite") else 2 if name.endswith("quality") else 3, recoverable=True)
+            elif apimart and name in ("seedance-2-5-flash", "doubao-seedance-2-5-flash"):
+                cap.update(ratios=["16:9", "9:16", "1:1", "4:3", "3:4", "21:9", "adaptive"], resolutions=["480p", "720p"], durations=list(range(4, 31)) + [-1], max_references=20, recoverable=True)
             elif "seedance" in name and apimart:
                 cap.update(ratios=["16:9", "9:16", "1:1", "4:3", "3:4", "21:9", "adaptive"], resolutions=["480p", "720p", "1080p"], durations=list(range(4, 16)), max_references=9, recoverable=True)
             elif name in ("veo3", "veo3-fast", "veo2", "veo2-fast") and not any(flag(f, p) for f in ("is_yuli_provider", "is_tudou_provider", "is_lingjing_provider", "is_agnes_provider", "is_jimeng_provider")):
@@ -156,6 +168,10 @@ def create_host(module, canvas_ops):
                 for key in ("generate_audio", "use_frame_roles", "trusted_asset"):
                     cap["settings"][key] = [False, True]
                 cap["settings"]["return_last_frame"] = [False, True]
+                if apimart and name in ("seedance-2-5-flash", "doubao-seedance-2-5-flash"):
+                    cap["settings"]["watermark"] = [False, True]
+                    cap["settings"].update(output_format=["mp4", "mov"], nsfw_check=[False, True], web_search=[False, True], seed=True)
+                    cap["settings"]["omni_reference_task_type"] = ["auto", "reference", "edit", "extend"]
             elif not apimart:
                 for key in ("watermark", "return_last_frame", "generate_audio", "camerafixed"):
                     cap["settings"][key] = [False, True]
@@ -329,6 +345,19 @@ def create_host(module, canvas_ops):
             p = provider(spec["provider_id"], spec["model"], "video")
             name = str(spec["model"]).lower()
             refs = spec.get("references", [])
+            if flag("is_apimart_provider", p) and name in ("seedance-2-5-flash", "doubao-seedance-2-5-flash"):
+                kinds = [r.get("kind", "image") for r in refs]
+                if kinds.count("image") > 10 or kinds.count("video") > 5 or kinds.count("audio") > 5:
+                    raise HTTPException(422, "Seedance 2.5 Flash 最多支持 10 张图片、5 个视频和 5 段音频。")
+                mode = settings.get("omni_reference_task_type", "auto")
+                if mode in ("edit", "extend") and "video" not in kinds and not deferred_references:
+                    raise HTTPException(422, "视频编辑和延长需要参考视频。")
+                if mode == "reference" and not refs and not deferred_references:
+                    raise HTTPException(422, "参考模式需要参考素材。")
+                if mode == "edit" and (settings.get("duration") != -1 or settings.get("ratio") != "adaptive"):
+                    raise HTTPException(422, "视频编辑须选择自动时长（-1，按 30 秒预扣）和 adaptive 比例。")
+                if mode == "extend" and settings.get("ratio") != "adaptive":
+                    raise HTTPException(422, "视频延长须选择 adaptive 比例。")
             if name == "minimax-h3-max" and settings.get("resolution") == "1080p" and settings.get("watermark"):
                 raise HTTPException(422, "MiniMax-H3-Max 1080P 不支持水印。")
             if name in ("minimax-h3", "minimax-h3-max"):
@@ -340,12 +369,13 @@ def create_host(module, canvas_ops):
                 if audios and not (images or videos or deferred_references):
                     raise HTTPException(422, "参考音频须搭配图片或视频。")
             if settings.get("use_frame_roles"):
+                flash = flag("is_apimart_provider", p) and name in ("seedance-2-5-flash", "doubao-seedance-2-5-flash")
                 if flag("is_apimart_provider", p) and name in ("minimax-h3", "minimax-h3-max") and settings.get("ratio") != "adaptive":
                     raise HTTPException(422, "MiniMax-H3 首尾帧模式必须明确选择 adaptive 比例；固定比例不会被自动改写。")
                 if settings.get("multimodal"):
                     raise HTTPException(422, "首尾帧模式不能同时启用全能参考。")
                 images = [r for r in refs if r.get("kind", "image") == "image"]
-                if len(images) > 2 or any(r.get("kind", "image") != "image" for r in refs) or (not images and not deferred_references):
+                if (not flash and (len(images) > 2 or any(r.get("kind", "image") != "image" for r in refs))) or (not images and not deferred_references):
                     raise HTTPException(422, "首尾帧模式需要 1～2 张图片，不能混用视频或音频。")
             if flag("is_apimart_provider", p) and name in ("minimax-h3", "minimax-h3-max") and settings.get("ratio") == "adaptive" and not refs and not deferred_references:
                 raise HTTPException(422, "MiniMax-H3 adaptive 比例需要参考素材，请明确选择固定比例。")
@@ -414,7 +444,7 @@ def create_host(module, canvas_ops):
                 body.update({k: settings[k] for k in cap["settings"] if k in settings})
                 if body.get("use_frame_roles"):
                     for i, reference in enumerate(body["images"]):
-                        reference["role"] = "first_frame" if i == 0 else "last_frame"
+                        reference["role"] = "first_frame" if i == 0 else "last_frame" if i == 1 else "reference_image"
                 result = await m.canvas_video(m.CanvasVideoRequest(**body))
             return outputs_from_result(result, spec["kind"])
         finally:

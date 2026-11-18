@@ -372,7 +372,7 @@ class AgentService:
                             raise PlanError("此步骤已经提交，不能修改或重新生成。")
                         step.update({k: edit[k] for k in ("provider_id", "model", "settings") if k in edit})
                         configured(self.host, step["provider_id"], step["model"], step["kind"])
-                        allowed = {"ratio", "resolution", "duration", "size_mode", "quality", "complexity", "svg", "seed", "fps", "version", "background", "output_format", "output_compression", "watermark", "return_last_frame", "generate_audio", "multimodal", "use_frame_roles", "camerafixed", "trusted_asset", "enhance_prompt", "enable_upsample", "transparent_background"}
+                        allowed = {"ratio", "resolution", "duration", "size_mode", "quality", "complexity", "svg", "seed", "fps", "version", "background", "output_format", "output_compression", "watermark", "return_last_frame", "generate_audio", "multimodal", "use_frame_roles", "camerafixed", "trusted_asset", "enhance_prompt", "enable_upsample", "transparent_background", "omni_reference_task_type", "nsfw_check", "web_search"}
                         if set(step["settings"]) - allowed:
                             raise PlanError("包含未允许的生成参数。")
                         step["settings"] = validate_settings(self.host, step, [r for r in step["references"] if "url" in r])

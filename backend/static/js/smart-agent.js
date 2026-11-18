@@ -52,7 +52,8 @@
             if (settings.customWidth && settings.customHeight) add('自定义尺寸',settings.customWidth + ' × ' + settings.customHeight);
             if (settings.width && settings.height && (mode || settings.customSize)) add('像素尺寸',settings.width + ' × ' + settings.height);
             if (video) {
-                const duration=pick('videoDuration','duration'); add('时长',present(duration) ? duration + ' 秒' : undefined);
+                const duration=pick('videoDuration','duration'); add('时长',present(duration) ? Number(duration) === -1 ? '模型自动（按 30 秒预扣）' : duration + ' 秒' : undefined);
+                add('视频任务类型',translated(pick('omni_reference_task_type'),{auto:'自动识别',reference:'参考生成',edit:'视频编辑',extend:'视频延长'}));
                 [['生成音频','videoGenerateAudio','generate_audio'],['首尾帧模式','videoUseFrameRoles','use_frame_roles'],['多模态参考','videoMultimodal','multimodal'],['返回尾帧','videoReturnLastFrame','return_last_frame'],['水印','videoWatermark','watermark'],['固定镜头','videoCameraFixed','camerafixed'],['可信素材','videoTrustedAsset','trusted_asset'],['提示词增强','videoEnhancePrompt','enhance_prompt'],['升采样','videoEnableUpsample','enable_upsample']].forEach(([name,...keys])=>add(name,yesNo(pick(...keys))));
                 add('帧率',pick('fps'));
             } else {
@@ -155,7 +156,7 @@
             await revisePlan({steps});
             closeMenu();
         }));applyGeneration.hidden=true;generation.append(applyGeneration);
-        const settingNames={ratio:'画面比例',resolution:'分辨率',duration:'时长（秒）',quality:'质量',complexity:'复杂度',version:'图片版本',background:'背景',output_format:'输出格式',output_compression:'压缩质量',generate_audio:'生成音频',use_frame_roles:'首尾帧',multimodal:'多模态参考',return_last_frame:'返回尾帧',watermark:'水印',camerafixed:'固定镜头',trusted_asset:'可信素材',enhance_prompt:'提示词增强',enable_upsample:'升采样',seed:'随机种子',fps:'帧率'};
+        const settingNames={ratio:'画面比例',resolution:'分辨率',duration:'时长（-1 为自动，按 30 秒预扣）',omni_reference_task_type:'视频任务类型',quality:'质量',complexity:'复杂度',version:'图片版本',background:'背景',output_format:'输出格式',output_compression:'压缩质量',generate_audio:'生成音频',use_frame_roles:'首尾帧',multimodal:'多模态参考',return_last_frame:'返回尾帧',watermark:'水印',camerafixed:'固定镜头',trusted_asset:'可信素材',enhance_prompt:'提示词增强',enable_upsample:'升采样',seed:'随机种子',fps:'帧率'};
         function parameterEditor(initial, fixedKind, onSave) {
             const box=el('div','sa-parameter-editor'), grid=el('div','sa-controls'), fields=el('div','sa-controls'), feedback=el('p','sa-muted');
             const kind=el('select'), platform=el('select'), selectedModel=el('select');

@@ -1991,6 +1991,10 @@ class CanvasVideoRequest(BaseModel):
     multimodal: bool = False
     trusted_asset: bool = False
     use_frame_roles: Optional[bool] = None
+    omni_reference_task_type: str = "auto"
+    output_format: str = "mp4"
+    nsfw_check: bool = False
+    web_search: bool = False
 
 class TempShUploadRequest(BaseModel):
     url: str = ""
@@ -10215,13 +10219,7 @@ async def upload_ai_reference(files: List[UploadFile] = File(...)):
     video_exts = {".mp4", ".webm", ".mov", ".m4v", ".flv"}
     audio_exts = {".mp3", ".wav", ".m4a", ".aac", ".ogg", ".flac"}
     doc_exts = {".pdf", ".txt", ".md", ".markdown", ".doc", ".docx", ".xls", ".xlsx", ".csv", ".json", ".zip", ".yaml", ".yml", ".log"}
-    max_upload_bytes = 50 * 1024 * 1024
     for file in files:
-        content = await file.read()
-        if not content:
-            continue
-        if len(content) > max_upload_bytes:
-            raise HTTPException(status_code=413, detail=f"{file.filename or '文件'} 超过 50MB，无法上传")
         ext = os.path.splitext(file.filename or "")[1].lower()
         content_type = (file.content_type or "").lower()
         kind = "image"
@@ -10247,8 +10245,26 @@ async def upload_ai_reference(files: List[UploadFile] = File(...)):
                 ext = ".bin"
         filename = f"ai_ref_{uuid.uuid4().hex[:12]}{ext}"
         path = output_path_for(filename, "input")
-        with open(path, "wb") as f:
-            f.write(content)
+        limit_mb = 200 if ext in {".mp4", ".mov"} else 50
+        limit = limit_mb * 1024 * 1024
+        error = f"{file.filename or '文件'} 超过 {limit_mb}MB，无法上传"
+        if file.size is not None and file.size > limit:
+            raise HTTPException(413, error)
+        size = 0
+        staging = path + ".part"
+        try:
+            with open(staging, "wb") as target:
+                while chunk := await file.read(1024 * 1024):
+                    size += len(chunk)
+                    if size > limit:
+                        raise HTTPException(413, error)
+                    target.write(chunk)
+            if not size:
+                continue
+            os.replace(staging, path)
+        finally:
+            if os.path.exists(staging):
+                os.remove(staging)
         uploaded.append({"url": output_url_for(filename, "input"), "name": file.filename or filename, "kind": kind, "mime": content_type})
     return {"files": uploaded}
 
@@ -12747,6 +12763,22 @@ def last_frame_image_urls(raw):
             deduped.append(url)
     return deduped
 
+def seedance_flash_last_frame_urls(raw):
+    """Extract documented nested last frames separately from video URLs."""
+    found = []
+    def visit(value):
+        if isinstance(value, list):
+            for item in value:
+                visit(item)
+        elif isinstance(value, dict):
+            frame = value.get('last_frame_url')
+            if isinstance(frame, str) and frame.startswith(('http://', 'https://', '/output/', '/assets/')) and frame not in found:
+                found.append(frame)
+            for key in ('data', 'result', 'videos'):
+                visit(value.get(key))
+    visit(raw)
+    return found
+
 def video_api_root(provider):
     base_url = (provider.get('base_url') or AI_BASE_URL).rstrip('/')
     if base_url.endswith('/v1') or base_url.endswith('/v2'):
@@ -13701,6 +13733,44 @@ async def canvas_video(payload: CanvasVideoRequest):
     submit_urls = video_submit_url_candidates(provider, base_url)
     submit_url = submit_urls[0]
     requested_model = selected_model(payload.model, 'agnes-video-v2.0' if is_agnes else 'veo3-fast')
+    is_seedance_flash = is_apimart and requested_model.lower() in {'seedance-2-5-flash', 'doubao-seedance-2-5-flash'}
+    flash_mode = str(payload.omni_reference_task_type or 'auto').strip().lower()
+    if is_seedance_flash:
+        if payload.output_format not in {"mp4", "mov"}:
+            raise HTTPException(400, "Flash 输出格式须选择 MP4 或 MOV。")
+        if flash_mode not in {'auto', 'reference', 'edit', 'extend'}:
+            raise HTTPException(400, 'Seedance 2.5 Flash 的任务类型无效。')
+        if len(payload.images) > 10 or len(payload.videos) > 5 or len(payload.audios) > 5:
+            raise HTTPException(400, 'Seedance 2.5 Flash 最多支持 10 张图片、5 个视频和 5 段音频。')
+        if flash_mode in {'edit', 'extend'} and not payload.videos:
+            raise HTTPException(400, '视频编辑和延长需要至少一个参考视频。')
+        if flash_mode == 'reference' and not (payload.images or payload.videos or payload.audios):
+            raise HTTPException(400, '参考模式需要至少一个参考素材。')
+        if flash_mode == 'edit' and payload.duration != -1:
+            raise HTTPException(400, '视频编辑的时长须选择自动，跟随源视频。')
+        if payload.duration != -1 and not 4 <= payload.duration <= 30:
+            raise HTTPException(400, 'Seedance 2.5 Flash 时长须为 4–30 秒，或选择自动。')
+        if payload.resolution and payload.resolution.lower() not in {'480p', '720p'}:
+            raise HTTPException(400, 'Seedance 2.5 Flash 仅支持 480P 和 720P。')
+        roles = [str(ref.role or '').strip() for ref in payload.images]
+        if roles.count('first_frame') > 1 or roles.count('last_frame') > 1 or ('last_frame' in roles and 'first_frame' not in roles):
+            raise HTTPException(400, '首尾帧各最多一张，尾帧需要同时提供首帧。')
+        for kind, refs, maximum in (('视频', payload.videos, 200 * 1024 * 1024), ('音频', payload.audios, 15 * 1024 * 1024)):
+            total = 0.0
+            for ref in refs:
+                path = output_file_from_url(str(ref or ''))
+                if not path or not os.path.isfile(path):
+                    continue
+                if os.path.getsize(path) > maximum:
+                    raise HTTPException(400, f'参考{kind}文件超过模型大小限制。')
+                seconds = await asyncio.to_thread(probe_local_video_duration_seconds, str(ref))
+                minimum = 4 if kind == '视频' and flash_mode == 'edit' else 2
+                if seconds is not None:
+                    if seconds < minimum or seconds > 30:
+                        raise HTTPException(400, f'参考{kind}时长须为 {minimum}–30 秒。')
+                    total += seconds
+            if total > 30:
+                raise HTTPException(400, f'参考{kind}总时长不能超过 30 秒。')
     is_h3_generation = is_apimart and is_apimart_minimax_h3_generation(requested_model)
     if not is_h3_generation and len(payload.prompt) > VIDEO_PROMPT_MAX_LENGTH:
         raise HTTPException(400, f'视频提示词最多 {VIDEO_PROMPT_MAX_LENGTH} 个字符。')
@@ -13760,14 +13830,14 @@ async def canvas_video(payload: CanvasVideoRequest):
                 invalid_images = []
                 video_payload = []
                 invalid_videos = []
-                for ref_url in payload.videos[:3]:
+                for ref_url in payload.videos[:5 if is_seedance_flash else 3]:
                     ref_url = str(ref_url or '').strip()
                     if not ref_url:
                         continue
                     if looks_like_image_media_url(ref_url):
                         invalid_videos.append((ref_url, '该地址是图片，不能作为参考视频。请将图片放入图片输入。'))
                         continue
-                    prepared_video_url = await prepare_apimart_video_reference(ref_url)
+                    prepared_video_url = ref_url if is_seedance_flash else await prepare_apimart_video_reference(ref_url)
                     normalized_video_url = await upload_video_for_apimart(client, provider, prepared_video_url)
                     if valid_apimart_video_image_input(normalized_video_url):
                         video_payload.append(normalized_video_url)
@@ -13781,12 +13851,14 @@ async def canvas_video(payload: CanvasVideoRequest):
                 apimart_model = apimart_veo31_model(requested_model) if is_veo31 else ''
                 if apimart_model == 'veo3.1-lite' and payload.images:
                     raise HTTPException(status_code=400, detail='veo3.1-lite 不支持图片输入，请改用 veo3.1-fast 或 veo3.1-quality。')
-                image_limit = 0 if apimart_model == 'veo3.1-lite' else 3 if is_veo31 else 9
+                image_limit = 0 if apimart_model == 'veo3.1-lite' else 3 if is_veo31 else 10 if is_seedance_flash else 9
                 upload_images = [ref for ref in payload.images if ref.url] if is_h3_generation else payload.images[:image_limit]
                 for (ref_index, ref) in enumerate(upload_images):
                     if not ref.url:
                         continue
                     role = h3_roles[ref_index] if is_h3_generation else str(ref.role or '').strip()
+                    if is_seedance_flash and not role and any(str(r.role or '').strip() for r in upload_images):
+                        role = 'reference_image'
                     if not is_veo31 and role in {'first_frame', 'last_frame', 'reference_image'}:
                         up_url = await upload_image_for_apimart(client, provider, ref.url)
                         if valid_apimart_video_image_input(up_url):
@@ -13814,7 +13886,7 @@ async def canvas_video(payload: CanvasVideoRequest):
                                     continue
                             reason = up_url[4:] if isinstance(up_url, str) and up_url.startswith('ERR:') else '未知错误'
                             invalid_images.append((ref.url, reason))
-                if is_h3_generation and invalid_images:
+                if (is_h3_generation or is_seedance_flash) and invalid_images:
                     raise HTTPException(400, f"参考图片上传失败，已停止提交，未忽略该图片：{invalid_images[0][1]}")
                 if payload.images and (not image_with_roles) and (not image_payload):
                     (first_url, first_reason) = invalid_images[0] if invalid_images else ('', '未知错误')
@@ -13836,17 +13908,17 @@ async def canvas_video(payload: CanvasVideoRequest):
                         body['official_fallback'] = False
                 else:
                     body = {'prompt': payload.prompt, 'model': selected_model(payload.model, 'doubao-seedance-2.0'), 'duration': apimart_video_duration(payload.duration), 'size': apimart_video_size(payload.aspect_ratio or payload.size), 'resolution': payload.resolution or '480p'}
-                    if image_with_roles and video_payload and (not is_h3_generation):
+                    if image_with_roles and video_payload and (not is_h3_generation) and not is_seedance_flash:
                         raise HTTPException(status_code=400, detail='APIMart Seedance 的 image_with_roles 不能和 video_urls 同时使用，请只保留图片首尾帧或参考视频其中一种。')
                     if image_with_roles:
                         body['image_with_roles'] = image_with_roles
                     elif image_payload:
-                        body['image_urls'] = image_payload[:9]
+                        body['image_urls'] = image_payload[:image_limit]
                     if video_payload:
                         body['video_urls'] = video_payload
                     audio_payload = []
                     invalid_audios = []
-                    for ref_url in (payload.audios or [])[:3]:
+                    for ref_url in (payload.audios or [])[:5 if is_seedance_flash else 3]:
                         ref_url = str(ref_url or '').strip()
                         if not ref_url:
                             continue
@@ -13861,6 +13933,16 @@ async def canvas_video(payload: CanvasVideoRequest):
                         raise HTTPException(status_code=400, detail=f'参考音频无法转换为 APIMart 支持的地址：{invalid_video_image_preview(first_url)}\n原因：{first_reason}')
                     if audio_payload:
                         body['audio_urls'] = audio_payload
+                    if is_seedance_flash:
+                        body['duration'] = payload.duration
+                        body['resolution'] = (payload.resolution or '480p').lower()
+                        body['generate_audio'] = bool(payload.generate_audio)
+                        body.update(watermark=payload.watermark, output_format=payload.output_format,
+                                    nsfw_check=payload.nsfw_check, web_search=payload.web_search)
+                        if flash_mode != 'auto':
+                            body['omni_reference_task_type'] = flash_mode
+                        if flash_mode in {'edit', 'extend'} or (image_with_roles and not (video_payload or audio_payload)):
+                            body['size'] = 'adaptive'
                     if is_h3_generation:
                         body = adapt_minimax_h3_body(body, payload)
                     if payload.enhance_prompt and is_minimax_h3_model(requested_model):
@@ -13970,7 +14052,8 @@ async def canvas_video(payload: CanvasVideoRequest):
             if task_id and (not video_output_urls(raw)):
                 video_phase = '轮询'
                 result = await wait_for_video_task(client, provider, task_id, submit_url)
-            urls = video_output_urls(result)
+            flash_frames = seedance_flash_last_frame_urls(result) if is_seedance_flash else []
+            urls = [url for url in video_output_urls(result) if url not in flash_frames]
             if not urls:
                 raise HTTPException(status_code=502, detail=f'视频生成成功但没有返回视频：{result}')
             if is_h3_generation:
@@ -13990,7 +14073,7 @@ async def canvas_video(payload: CanvasVideoRequest):
                 response_payload['warnings'] = [item['warning'] for item in video_metadata if item['warning']]
                 print('[video:H3-result] ' + json.dumps({'task_id': str(task_id or ''), 'outputs': video_metadata}, ensure_ascii=False))
             if payload.return_last_frame:
-                last_frames = last_frame_image_urls(result)
+                last_frames = flash_frames if is_seedance_flash else last_frame_image_urls(result)
                 if last_frames:
                     response_payload['images'] = [{'url': await save_remote_image_to_output(url), 'kind': 'image', 'name': 'last_frame.png'} for url in last_frames]
             return response_payload
@@ -14015,6 +14098,8 @@ async def canvas_video(payload: CanvasVideoRequest):
             hint = f'上游「{provider_name}」模型「{requested_model}」不支持当前时长参数。\n\n不同视频模型支持的时长不一样；如果选择了模型不支持的时长，上游可能报错，也可能自动按平台默认时长生成，例如 5 秒。\n\n请把视频时长切回该模型支持的值，或改用支持更长时长的视频模型。'
             raise HTTPException(status_code=exc.response.status_code, detail=hint) from exc
         if 'audio duration' in text.lower():
+            if is_seedance_flash:
+                raise HTTPException(status_code=exc.response.status_code, detail='参考音频时长不符合要求：每段须为 2–30 秒，合计不超过 30 秒。') from exc
             too_long = 'less than or equal' in text.lower() or '15.2' in text
             bound_hint = '太长（超过 15.2 秒）' if too_long else '太短（不足 1.8 秒）'
             hint = f'上游「{provider_name}」模型「{requested_model}」拒绝了参考音频：时长{bound_hint}。\n\n方舟 Seedance 的参考音频时长必须在 1.8 ~ 15.2 秒之间，请把音频裁剪到这个区间后再作为参考音频输入。'

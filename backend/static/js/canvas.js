@@ -772,9 +772,13 @@ function videoProviderProtocol(providerId){
     return String(provider?.protocol || '').trim().toLowerCase();
 }
 function videoResolutionOptions(providerId, model){
+    if(isApimartSeedanceFlash(providerId, model)) return [['','默认 480P'], ['480p','480P'], ['720p','720P']];
     const profile = isApimartProviderId(providerId) && MiniMaxVideo.profile(model);
     if(profile) return [['','Auto'], ...profile.resolutions.map(v=>[v,v.toUpperCase()])];
     return [['','Auto'],['480p','480P'],['720p','720P'],['768p','768P'],['1080p','1080P'],['2k','2K'],['4k','4K']];
+}
+function isApimartSeedanceFlash(providerId, model){
+    return isApimartProviderId(providerId) && ['seedance-2-5-flash','doubao-seedance-2-5-flash'].includes(String(model || '').trim().toLowerCase());
 }
 function videoResolutionOptionsHtml(providerId, model){
     return videoResolutionOptions(providerId, model).map(([v,l]) => `<option value="${escapeHtml(v)}">${escapeHtml(l)}</option>`).join('');
@@ -9786,6 +9790,8 @@ function renderVideoBody(node){
                 <select class="select-lite video-provider" style="flex:1">${videoProviderOptions(node.apiProvider)}</select>
                 <select class="select-lite video-model" style="flex:2">${videoModelOptions(node.model, node.apiProvider)}</select>
             </div>
+            ${isApimartSeedanceFlash(node.apiProvider,node.model) ? '<div class="gen-settings-row" style="flex-wrap:wrap">'+SeedanceFlashOptions.controls(node)+'</div>' : ''}
+            ${isApimartSeedanceFlash(node.apiProvider,node.model) ? `<div class="gen-settings-row"><select class="select-lite video-flash-mode" title="视频编辑跟随源视频时长，按 30 秒预扣">${Object.entries({auto:'自动识别',reference:'参考生成',edit:'视频编辑',extend:'视频延长'}).map(([v,l])=>`<option value="${v}" ${(node.videoFlashMode || 'auto')===v?'selected':''}>${l}</option>`).join('')}</select><button type="button" class="setting-check ${node.videoDurationMode === 'model' ? 'active' : ''}" data-flash-model-duration title="按 30 秒预扣，完成后按实际用量结算">模型自动时长</button></div>` : ''}
             <div class="gen-settings-row">
                 <label class="field" style="flex:1">
                     <div class="setting-title" style="display:flex;align-items:center;justify-content:space-between;gap:6px">
@@ -9844,8 +9850,9 @@ function renderVideoBody(node){
     const syncH3AspectControl = () => {
         const profile=isCanvasH3Video(node) && MiniMaxVideo.profile(node.model);
         if(profile?.model==='MiniMax-H3-Max' && node.resolution==='1080p') node.watermark=false;
-        durationSelect.min=profile ? profile.min : 1;
-        durationSelect.max=profile ? profile.max : 60;
+        const flash=isApimartSeedanceFlash(node.apiProvider,node.model);
+        durationSelect.min=flash ? 4 : profile ? profile.min : 1;
+        durationSelect.max=flash ? 30 : profile ? profile.max : 60;
         aspectSelect.querySelector('option[value="9:21"]').disabled=Boolean(profile);
         const watermarkButton=wrap.querySelector('[data-video-toggle="watermark"]');
         if(watermarkButton){
@@ -9885,6 +9892,7 @@ function renderVideoBody(node){
         node.resolution = resolutionSelect.value || '';
         syncH3AspectControl();
         scheduleSave();
+        refreshNodes([node.id]);
     };
     modelSelect.onchange = e => {
         e.stopPropagation();
@@ -9893,7 +9901,13 @@ function renderVideoBody(node){
         node.resolution = resolutionSelect.value || '';
         syncH3AspectControl();
         scheduleSave();
+        refreshNodes([node.id]);
     };
+    SeedanceFlashOptions.bind(wrap,node,scheduleSave);
+    const flashMode = wrap.querySelector('.video-flash-mode');
+    if(flashMode) flashMode.onchange = e => { e.stopPropagation(); node.videoFlashMode=e.target.value; scheduleSave(); };
+    const flashAuto = wrap.querySelector('[data-flash-model-duration]');
+    if(flashAuto) flashAuto.onclick = e => { e.stopPropagation(); node.videoDurationMode=node.videoDurationMode === 'model' ? 'manual' : 'model'; scheduleSave(); refreshNodes([node.id]); };
     const durationMode = wrap.querySelector('[data-video-duration-mode]');
     durationMode.onclick = e => {
         e.stopPropagation();
@@ -10625,6 +10639,8 @@ async function runVideoNode(nodeId, opts={}){
             refreshNodes([node.id]);
         }
     }
+    const flash = isApimartSeedanceFlash(node.apiProvider,node.model);
+    if(flash && (node.videoFlashMode === 'edit' || node.videoDurationMode === 'model')) duration = -1;
     let out = outputForNode(node, 460);
     const pendingId = uid('p');
     const run = runSnapshot(node, prompt, refs);
@@ -10656,6 +10672,7 @@ async function runVideoNode(nodeId, opts={}){
                 multimodal:Boolean(node.multimodal),
                 ...(isCanvasH3Video(node) ? {use_frame_roles:Boolean(node.useFrameRoles)} : {}),
                 return_last_frame:Boolean(node.returnLastFrame)
+                ,...(flash ? {...SeedanceFlashOptions.payload(node),omni_reference_task_type:node.videoFlashMode || 'auto'} : {})
             })
         }, {cascadeTargetId}).then(async r => { if(!r.ok) throw new Error(await responseErrorMessage(r, tr('canvas.videoFailed'))); return r.json(); });
         const meta = collectRunMeta(out, pendingId);
