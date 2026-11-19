@@ -19,7 +19,11 @@
     function params(source={}, refs=[]){
         if(refs.length > 16) throw Error('GPT-Image-2.6 Ext 最多支持 16 张参考图。');
         const resolution = String(source.resolution || '1k').toLowerCase();
-        if(!['1k','auto','custom'].includes(resolution)) throw Error('GPT-Image-2.6 Ext 当前仅开放 1K，请重新选择分辨率。');
+        if(!['1k','2k','4k','auto','custom'].includes(resolution)) throw Error('GPT-Image-2.6 Ext 支持 1K / 2K / 4K，请重新选择分辨率。');
+        if(['2k','4k'].includes(resolution) && refs.some(ref=>{
+            const url=String(ref?.url || ref || '');
+            return /^data:image\/(gif|bmp);/i.test(url) || /\.(gif|bmp)$/i.test(url.split(/[?#]/,1)[0]);
+        })) throw Error('2K / 4K 参考图请使用 PNG、JPEG 或 WebP。');
         const version = String(source.imageVersion || source.version || 'flare').trim().toLowerCase();
         if(!['flare','sunburst'].includes(version)) throw Error('Ext 版本须为 Flare 或 Sunburst。');
         const format = String(source.outputFormat || source.output_format || 'png').toLowerCase().replace(/^jpg$/, 'jpeg');
@@ -38,7 +42,7 @@
         if(!['auto',...ratios].includes(size)) throw Error('请选择自动或支持的 10 种比例。');
         if(['svg','gif'].includes(format) && refs.length) throw Error('SVG / GIF 仅支持文生图，请移除参考图或改选静态图片格式。');
         if(format === 'gif' && size !== 'auto') throw Error('GIF 仅支持自动尺寸，请选择自动比例。');
-        const result = {version,size,resolution:'1k',output_format:format};
+        const result = {version,size,resolution:['2k','4k'].includes(resolution)?resolution:'1k',output_format:format};
         const quality = String(source.quality || 'auto').toLowerCase();
         if(!qualities.includes(quality)) throw Error('请选择支持的图片质量。');
         result.quality = quality;
@@ -73,7 +77,7 @@
                 event.stopPropagation();
                 settings[element.dataset.param] = element.value;
                 if(element.dataset.param === 'outputFormat' && element.value === 'gif'){
-                    settings.ratio = 'auto'; settings.resolution = '1k';
+                    settings.ratio = 'auto';
                 }
                 changed();
             };

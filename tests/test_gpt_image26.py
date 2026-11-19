@@ -27,7 +27,7 @@ class ContractTests(unittest.TestCase):
         for quality in g.QUALITIES:
             result = g.normalize('3:4', '1K', 'Sunburst', quality, 'jpg', 'high')
             self.assertEqual((result['quality'], result['version'], result['output_format']), (quality, 'sunburst', 'jpeg'))
-        for kwargs in ({'resolution':'2k'}, {'reference_count':17}, {'output_format':'gif','size':'3:4'}, {'output_format':'svg','reference_count':1}, {'quality':'ultra'}, {'svg':{'model':'test'}}):
+        for kwargs in ({'resolution':'8k'}, {'reference_count':17}, {'output_format':'gif','size':'3:4'}, {'output_format':'svg','reference_count':1}, {'quality':'ultra'}, {'svg':{'model':'test'}}):
             with self.subTest(kwargs=kwargs), self.assertRaises(HTTPException):
                 g.normalize(**kwargs)
         self.assertNotIn('quality', g.normalize())
@@ -89,6 +89,7 @@ class AdapterTests(unittest.TestCase):
         def transport(request):
             if request.method=='POST':
                 body=json.loads(request.content);posts.append(body)
+                self.assertEqual(body["resolution"], "4k")
                 return httpx.Response(200,json={'data':[{'task_id':'task_'+str(len(posts)),'status':'submitted'}]})
             if request.url.path.startswith('/v1/tasks/'):
                 task=request.url.path.rsplit('/',1)[1]
@@ -99,7 +100,7 @@ class AdapterTests(unittest.TestCase):
             return httpx.Response(200,content=raw,headers={'content-type':{'svg':'image/svg+xml','gif':'image/gif'}.get(fmt,'image/png')})
         async def run():
             for fmt in ('png','gif','svg'):
-                payload=m.OnlineImageRequest(provider_id='apimart',model=g.MODEL,prompt='fixture',size='auto' if fmt=='gif' else '3:4',resolution='1k',quality='max',output_format=fmt,version='sunburst',complexity='high',n=2)
+                payload=m.OnlineImageRequest(provider_id='apimart',model=g.MODEL,prompt='fixture',size='auto' if fmt=='gif' else '3:4',resolution='4k',quality='max',output_format=fmt,version='sunburst',complexity='high',n=2)
                 result=await m.build_online_image_result(payload)
                 self.assertEqual(len(result['images']),2)
                 for url in result['images']:
@@ -125,7 +126,7 @@ class AdapterTests(unittest.TestCase):
         by_key={field['key']:field for field in fields}
         self.assertEqual(self.m.apimart_image_reference_limit(g.MODEL),16)
         self.assertEqual(by_key['reference_images']['max'],16)
-        self.assertEqual(by_key['size']['resolutions'],[{'value':'1k','label':'1K'}])
+        self.assertEqual(by_key['size']['resolutions'],[{'value':r,'label':r.upper()} for r in ('1k','2k','4k')])
         self.assertNotIn('background',by_key)
         self.assertIn('complexity',by_key)
 
@@ -156,7 +157,7 @@ class AdapterTests(unittest.TestCase):
             self.assertEqual(m.IMAGE26_JOURNAL.get('task_partial_2')['status'],'failed')
             self.assertTrue(all(len(body['image_urls'])==16 for body in posts))
             self.assertTrue(all(body['n']==1 for body in posts))
-            for args in ({'resolution':'4k'},{'reference_images':[ref]*17},{'reference_images':[{'url':''}]}):
+            for args in ({'resolution':'8k'},{'reference_images':[ref]*17},{'reference_images':[{'url':''}]}):
                 with self.assertRaises(HTTPException):
                     await m.build_online_image_result(m.OnlineImageRequest(provider_id='apimart',model=g.MODEL,prompt='invalid',**args))
             self.assertEqual(len(posts),4)

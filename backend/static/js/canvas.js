@@ -9441,7 +9441,7 @@ function renderGeneratorBody(node){
             versionSelect.style.display='none';
             extra.innerHTML=GptImage26.controls(node,'select-lite');
             const hint=document.createElement('span');hint.style.cssText='font-size:10px;opacity:.65';
-            try{hint.textContent='请求 '+GptImage26.params(node).size+' · 1K';}catch(error){hint.textContent=error.message;}extra.append(hint);
+            try{hint.textContent='请求 '+GptImage26.params(node).size+' · '+GptImage26.params(node).resolution.toUpperCase();}catch(error){hint.textContent=error.message;}extra.append(hint);
             GptImage26.bind(extra,node,()=>{syncSizeControls();syncQualityControls();scheduleSave();});
         }
         if(modelOutputRow) modelOutputRow.style.display = hasBackground ? 'flex' : 'none';
@@ -9523,7 +9523,7 @@ function renderGeneratorBody(node){
             }
         }
         if(GptImage26.isModel(node.model)){
-            [...resolutionSelect.options].forEach(option=>option.disabled=!['1k','custom'].includes(option.value));
+            [...resolutionSelect.options].forEach(option=>option.disabled=!['1k','2k','4k','custom'].includes(option.value));
             const unsupported=ratioSelect.querySelector('option[value="ultratall"]'); if(unsupported)unsupported.disabled=true;
         }
         normalizeApiNodeSizeChoice(node);
@@ -9596,7 +9596,7 @@ function renderGeneratorBody(node){
         if(node.imageSizeFromReference) delete node.imageSizeFromReference;
         node.ratio = e.target.value;
         if(GptImage26.isModel(node.model)){
-            [...resolutionSelect.options].forEach(option=>option.disabled=!['1k','custom'].includes(option.value));
+            [...resolutionSelect.options].forEach(option=>option.disabled=!['1k','2k','4k','custom'].includes(option.value));
             const unsupported=ratioSelect.querySelector('option[value="ultratall"]'); if(unsupported)unsupported.disabled=true;
         }
         normalizeApiNodeSizeChoice(node);
@@ -9637,7 +9637,7 @@ function renderGeneratorBody(node){
             node.customHeight = '';
         }
         if(GptImage26.isModel(node.model)){
-            [...resolutionSelect.options].forEach(option=>option.disabled=!['1k','custom'].includes(option.value));
+            [...resolutionSelect.options].forEach(option=>option.disabled=!['1k','2k','4k','custom'].includes(option.value));
             const unsupported=ratioSelect.querySelector('option[value="ultratall"]'); if(unsupported)unsupported.disabled=true;
         }
         normalizeApiNodeSizeChoice(node);

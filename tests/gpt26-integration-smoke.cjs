@@ -25,7 +25,7 @@ async function main(){
     assert.equal(await js(`document.getElementById('extBackgroundField').style.display`),'none');
     assert.equal(await js(`document.getElementById('qualitySelect').options.length`),6);
     assert.equal(await js(`onlineReferenceSlots().length`),16);
-    assert.equal(await js(`document.querySelector('#resolutionSelect option[value="2k"]').disabled`),true);
+    assert.equal(await js(`document.querySelector('#resolutionSelect option[value="2k"]').disabled`),false);
     await js(`document.querySelector('#ext26Controls [data-param="outputFormat"]').value='gif';document.querySelector('#ext26Controls [data-param="outputFormat"]').dispatchEvent(new Event('change',{bubbles:true}));void 0`);
     assert.equal(await js('ratio'),'auto');
     await win.loadURL(base+'/static/canvas.html?id=gpt26-classic');

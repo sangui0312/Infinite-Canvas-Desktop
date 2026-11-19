@@ -1161,7 +1161,7 @@
                 const quality=document.createElement('select');quality.setAttribute('aria-label','图片质量');quality.dataset.param='quality';
                 GptImage26.qualities.forEach(value=>{const option=document.createElement('option');option.value=value;option.textContent='质量 '+value;quality.appendChild(option);});
                 quality.value=image26Settings.quality;section.appendChild(quality);
-                GptImage26.bind(section,image26Settings,()=>{if(image26Settings.outputFormat==='gif')chatResolution='auto';saveChatSettings();syncChat26Controls();});
+                GptImage26.bind(section,image26Settings,()=>{saveChatSettings();syncChat26Controls();});
                 section.querySelectorAll('select,input').forEach(control=>{control.style.cssText='max-width:190px;min-width:70px;padding:6px;border:1px solid var(--chat-line);border-radius:9px;background:var(--chat-panel);color:var(--chat-text);font-size:11px';});
             }
         }
@@ -1299,7 +1299,7 @@
             ['1k','2k','4k'].forEach(label => {
                 const btn = document.querySelector(`.resolution-picker-option[data-resolution="${label}"]`);
                 const sizeEl = document.getElementById(`resolutionPreset${label}`);
-                if(btn){btn.classList.toggle('active', !isAuto && !isCustom && chatPresetResolution === label);btn.disabled=GptImage26.isModel(activeImageModel) && label!=='1k';}
+                if(btn){btn.classList.toggle('active', !isAuto && !isCustom && chatPresetResolution === label);btn.disabled=false;}
                 if(sizeEl) sizeEl.textContent = chatSizeForResolution(label);
             });
             ['square','portrait','portrait43','landscape43','landscape','story','wide'].forEach(label => {
@@ -1539,7 +1539,7 @@
             if(GptImage26.isModel(activeImageModel) && mode!=='chat'){
                 try{
                     const match=String(requestedSize || '').match(/^(\d+)x(\d+)$/);
-                    const resolvedRatio=chatResolution==='auto' ? 'auto' : match ? GptImage26.closestRatio(Number(match[1]),Number(match[2])) : chatRatio;
+                    const resolvedRatio=image26Settings.outputFormat==='gif' || chatResolution==='auto' ? 'auto' : match ? GptImage26.closestRatio(Number(match[1]),Number(match[2])) : chatRatio;
                     const source={...image26Settings,model:activeImageModel,ratio:resolvedRatio,resolution:chatResolution==='auto' || chatResolution==='custom' ? '1k' : chatResolution};
                     ext26Request=GptImage26.params(source,refs);
                 }catch(error){btn.disabled=false;alert(error.message);return;}

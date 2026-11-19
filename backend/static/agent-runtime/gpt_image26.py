@@ -80,7 +80,7 @@ def normalize(size="auto", resolution="", version="flare", quality="", output_fo
 
     if reference_count > 16:
         raise HTTPException(400, "GPT-Image-2.6 Ext 最多支持 16 张参考图，请移除超出的图片。")
-    resolution = choice(resolution, ("1k",), "当前分辨率仅开放 1K，", "1k")
+    resolution = choice(resolution, ("1k", "2k", "4k"), "分辨率", "1k")
     body = {"model": MODEL, "version": choice(version, ("flare", "sunburst"), "版本", "flare"),
             "resolution": resolution, "output_format": choice("jpeg" if str(output_format).lower() == "jpg" else output_format, FORMATS, "输出格式", "png"), "n": 1}
     raw_size = re.sub(r"\s+", "", str(size or "auto").lower())
@@ -114,9 +114,11 @@ def normalize(size="auto", resolution="", version="flare", quality="", output_fo
     return body
 
 
-def reference_data_url(ref, resolve):
+def reference_data_url(ref, resolve, resolution="1k"):
     value = str(ref.get("url") or "").strip()
     if value.startswith(("https://", "http://")):
+        if resolution in ("2k", "4k") and re.search(r"\.(gif|bmp)$", value.split("?", 1)[0].split("#", 1)[0], re.I):
+            raise HTTPException(400, "2K / 4K 参考图请使用 PNG、JPEG 或 WebP。")
         return value
     if value.startswith("data:image/") and ";base64," in value:
         try:
@@ -139,6 +141,8 @@ def reference_data_url(ref, resolve):
         with Image.open(BytesIO(raw)) as image:
             fmt = image.format
             image.verify()
+        if resolution in ("2k", "4k") and fmt in ("GIF", "BMP"):
+            raise HTTPException(400, "2K / 4K 参考图请使用 PNG、JPEG 或 WebP。")
         mime = {"PNG": "png", "JPEG": "jpeg", "WEBP": "webp", "GIF": "gif", "BMP": "bmp"}[fmt]
     except (OSError, ValueError, KeyError):
         raise HTTPException(400, "参考图须为有效 PNG / JPEG / WebP / GIF / BMP。") from None

@@ -118,7 +118,7 @@ def create_host(module, canvas_ops):
         cap = {"available": True, "ratios": [], "resolutions": [], "durations": [], "max_references": 0, "source_ratio": False, "auto_ratio": False, "recoverable": False, "cancellable": False, "settings": {}}
         if kind == "image":
             if gpt_image26.is_model(name) and apimart:
-                cap.update(ratios=list(gpt_image26.RATIOS) + ["auto"], resolutions=["1k"], max_references=16, auto_ratio=True, source_ratio=True, recoverable=True, closest_source_ratio=True)
+                cap.update(ratios=list(gpt_image26.RATIOS) + ["auto"], resolutions=["1k", "2k", "4k"], max_references=16, auto_ratio=True, source_ratio=True, recoverable=True, closest_source_ratio=True)
                 cap["settings"] = {"version": ["flare", "sunburst"], "quality": list(gpt_image26.QUALITIES), "output_format": list(gpt_image26.FORMATS), "complexity": ["", "low", "medium", "high"], "svg": True}
                 cap["format_rules"] = {"svg": {"references": False, "optional_model": True, "reasoning_efforts": list(gpt_image26.EFFORTS)}, "gif": {"references": False, "ratio": "auto"}, "upstream_count": 1}
             elif name == "gpt-image-2.5-ext" and apimart:

@@ -390,7 +390,7 @@ function extImageParams(source={}, refs=[]){
                     imageVersion=values.imageVersion;outputFormat=values.outputFormat;complexity=values.complexity;svgModel=values.svgModel;svgEffort=values.svgEffort;
                     ratio=values.ratio;resolution=values.resolution;syncExtControls();
                 });
-                [...resolutionSelect.options].forEach(option=>option.disabled=!['1k','custom'].includes(option.value));
+                [...resolutionSelect.options].forEach(option=>option.disabled=!['1k','2k','4k','custom'].includes(option.value));
                 const qs=document.getElementById('qualitySelect');
                 qs.innerHTML=GptImage26.qualities.map(v=>`<option value="${v}">${({auto:'自动',low:'低',medium:'中',high:'高',xhigh:'极高',max:'最高'})[v]}</option>`).join('');
                 qs.value=quality;

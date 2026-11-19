@@ -9,7 +9,7 @@ const original=()=>({url:'/output/768.mp4',h3_request:{provider_id:'apimart',mod
 test('both canvases apply different H3/Max capabilities without changing other models',()=>{
     for(const [file,fn] of [['canvas.js','isCanvasH3Video'],['smart-canvas.js','isSmartH3Video']]){
         const source=fs.readFileSync('backend/static/js/'+file,'utf8');
-        const context={MiniMaxVideo:api,isApimartProviderId:id=>id==='apimart',tr:x=>x};
+        const context={isApimartSeedanceFlash:()=>false,MiniMaxVideo:api,isApimartProviderId:id=>id==='apimart',tr:x=>x};
         for(const name of [fn,'videoResolutionOptions']){
             const start=source.indexOf(`function ${name}(`),end=source.indexOf('\nfunction ',start+1);
             vm.runInNewContext(source.slice(start,end),context);

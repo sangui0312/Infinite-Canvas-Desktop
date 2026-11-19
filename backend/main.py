@@ -9562,7 +9562,7 @@ async def generate_ai_image(prompt, size, quality, model, reference_images=None,
         if is_gpt26_ext:
             body = {**ext26_body, 'prompt': prompt}
             if image_refs:
-                body['image_urls'] = [gpt_image26.reference_data_url(ref, output_file_from_url) for ref in image_refs]
+                body['image_urls'] = [gpt_image26.reference_data_url(ref, output_file_from_url, body["resolution"]) for ref in image_refs]
             # A timed-out submission has an unknown outcome. Never repeat a paid POST.
             response = await client.post(gen_url, headers=api_headers(provider=provider, model=model), json=body)
         elif is_gpt25_ext:
@@ -11747,7 +11747,7 @@ async def build_online_image_result(payload: OnlineImageRequest):
         "request_id": raw.get("id") if isinstance(raw, dict) else None,
         "partial_errors": partial_errors,
         "params": {"provider_id": provider["id"], "model": model, "size": request_size, "requested_size": payload.size, "quality": payload.quality, "n": count, "reference_images": refs,
-                   **({"version":payload.version,"resolution":"1k","output_format":payload.output_format or "png","complexity":payload.complexity,"svg":payload.svg} if is_gpt26_ext else {}),
+                   **({"version":request_version,"resolution":request_resolution,"output_format":payload.output_format or "png","complexity":payload.complexity,"svg":payload.svg} if is_gpt26_ext else {}),
                    **({"version": request_version, "resolution": request_resolution, "background": request_background} if is_gpt25_ext else {})},
         "raw_usage": raw.get("usage") if isinstance(raw, dict) else None,
     }
@@ -12618,7 +12618,7 @@ def build_image_param_fields(engine: str, provider: dict, model: str):
         size_field = {'key': 'size', 'type': 'size', 'label': '尺寸', 'ratios': [{'value': value, 'label': '自动' if value == 'auto' else value} for value in ('auto', '1:1', '16:9', '9:16', '4:3', '3:4', '3:2', '2:3', '5:4', '4:5', '21:9')], 'resolutions': [{'value': value, 'label': value} for value in ('1K', '2K', '4K')], 'default': {'ratio': 'auto', 'resolution': '1K'}}
     if is_gpt26:
         return [
-            {'key': 'size', 'type': 'size', 'label': '尺寸', 'ratios': [{'value': r, 'label': '自动' if r == 'auto' else r} for r in ('auto', *gpt_image26.RATIOS)], 'resolutions': [{'value': '1k', 'label': '1K'}], 'default': {'ratio': 'auto', 'resolution': '1k'}},
+            {'key': 'size', 'type': 'size', 'label': '尺寸', 'ratios': [{'value': r, 'label': '自动' if r == 'auto' else r} for r in ('auto', *gpt_image26.RATIOS)], 'resolutions': [{'value': r, 'label': r.upper()} for r in ('1k', '2k', '4k')], 'default': {'ratio': 'auto', 'resolution': '1k'}},
             {'key': 'version', 'type': 'select', 'label': '版本', 'options': [{'value': r, 'label': r.title()} for r in ('flare', 'sunburst')], 'default': 'flare'},
             {'key': 'quality', 'type': 'select', 'label': '质量', 'options': [{'value': r, 'label': r} for r in gpt_image26.QUALITIES], 'default': 'auto'},
             {'key': 'output_format', 'type': 'select', 'label': '输出格式', 'options': [{'value': r, 'label': r.upper()} for r in gpt_image26.FORMATS], 'default': 'png'},

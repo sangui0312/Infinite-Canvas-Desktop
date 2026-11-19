@@ -3236,7 +3236,7 @@ function renderRatioControl(prefix='', includeSource=false){
 }
 function renderResolutionControl(prefix=''){
     const resKey = prefix ? `${prefix}Resolution` : 'resolution';
-    const options = (!prefix && settings.engine === 'api' && GptImage26.isModel(settings.model)) ? ['1k'] : (!prefix && settings.engine === 'api') ? ['auto','1k','2k','4k','custom'] : ['1k','2k','4k','custom'];
+    const options = (!prefix && settings.engine === 'api' && GptImage26.isModel(settings.model)) ? ['1k','2k','4k'] : (!prefix && settings.engine === 'api') ? ['auto','1k','2k','4k','custom'] : ['1k','2k','4k','custom'];
     const current = settings[resKey] || ((!prefix && settings.engine === 'api') ? defaultSmartApiResolution(settings.model) : '1k');
     const allowAuto = !prefix && settings.engine === 'api' && settings.apiKind !== 'video' && isGptImageAutoSizeModel(settings.model);
     return `<div class="smart-control resolution-control">
@@ -3263,7 +3263,7 @@ function sizePickerDefaultResolution(prefix=''){
 }
 function sizePickerLabel(prefix=''){
     if(!prefix && settings.apiKind !== 'video' && GptImage26.isModel(settings.model)){
-        try{return `${GptImage26.params(settings).size} · 1K`;}catch(_){return '适配输入 · 1K';}
+        try{return `${GptImage26.params(settings).size} · ${GptImage26.params(settings).resolution.toUpperCase()}`;}catch(_){return '适配输入 · 1K';}
     }
     const scope = sizePickerScope(prefix);
     if(scope === 'auto') return !prefix && isGptImageExtModel(settings.model) ? `自动 · ${resolutionLabel(prefix)}` : '自动';
@@ -3287,7 +3287,7 @@ function renderSizePickerControl(prefix='', includeSource=false){
     const ext = !prefix && settings.engine === 'api' && settings.apiKind !== 'video' && isGptImageExtModel(settings.model);
     const scope = sizePickerScope(prefix);
     const nano2 = !prefix && settings.engine === 'api' && isApimartProviderId(settings.provider_id) && isApimartNanoBanana2Model(settings.model);
-    const options = (!prefix && settings.engine === 'api' && GptImage26.isModel(settings.model)) ? ['1k'] : (!prefix && settings.engine === 'api') ? (nano2 ? ['0.5k','1k','2k','4k'] : ['auto','1k','2k','4k']) : ['1k','2k','4k'];
+    const options = (!prefix && settings.engine === 'api' && GptImage26.isModel(settings.model)) ? ['1k','2k','4k'] : (!prefix && settings.engine === 'api') ? (nano2 ? ['0.5k','1k','2k','4k'] : ['auto','1k','2k','4k']) : ['1k','2k','4k'];
     const currentRes = settings[resKey] || ((!prefix && settings.engine === 'api') ? defaultSmartApiResolution(settings.model) : '1k');
     const currentRatio = settings[ratioKey] || 'square';
     const currentCustomRatio = settings[customRatioKey] || (currentRatio === 'source' ? sourceImageRatioLabel(prefix) : '');
@@ -3716,7 +3716,7 @@ function setDynamicSetting(key, value){
     const numericKeys = new Set(['count','width','height','videoDuration','enhanceStrength','enhanceUpscaleRes','editUpscaleRes','customRatioWidth','customRatioHeight','customWidth','customHeight','msCustomRatioWidth','msCustomRatioHeight','msCustomWidth','msCustomHeight','outputCompression']);
     const layoutKeys = new Set(['provider_id','model','resolution','ratio','outputFormat','imageVersion','complexity','svgModel','svgEffort','msgenModel','msCustomModel','msResolution','msRatio','videoProvider','videoModel','videoAspect','videoResolution','comfyMode','comfyWorkflow','quality','count','enhanceUpscaleRes','editUpscaleRes','jimengUpscaleRes','rhConfigKey','rhPayment','rhInstanceType']);
     settings[key] = numericKeys.has(key) && value !== '' ? Number(value) : value;
-    if(GptImage26.isModel(settings.model) && key === 'outputFormat' && value === 'gif'){settings.ratio='auto';settings.resolution='1k';}
+    if(GptImage26.isModel(settings.model) && key === 'outputFormat' && value === 'gif'){settings.ratio='auto';}
     if(key === 'videoAspect') settings.flashAspectChosen = true;
     if(key === 'videoDuration') settings.videoDurationMode = 'manual';
     if(key === 'provider_id') settings.model = '';

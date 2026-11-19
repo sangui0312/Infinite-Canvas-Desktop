@@ -10,7 +10,8 @@ test('mixed input dimensions use a fresh supported ratio for each run',()=>{
     assert.equal(settings.customRatio,undefined);
 });
 test('current resolution, references and SVG/GIF combinations are enforced',()=>{
-    assert.throws(()=>g.params({resolution:'2k'}),/1K/);
+    for(const tier of ['1k','2k','4k']) assert.equal(g.params({resolution:tier}).resolution,tier);
+    assert.throws(()=>g.params({resolution:'8k'}),/1K/);
     assert.throws(()=>g.params({},Array(17).fill({})),/16/);
     assert.throws(()=>g.params({outputFormat:'gif',ratio:'square'}),/自动/);
     assert.throws(()=>g.params({outputFormat:'svg'},[{url:'fixture'}]),/文生图/);
