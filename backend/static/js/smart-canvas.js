@@ -2965,7 +2965,6 @@ function renderApiVideoParams(){
     if(isSmartH3Video() && settings.videoModel.toLowerCase()==='minimax-h3-max' && settings.videoResolution==='1080p') settings.videoWatermark=false;
     const flash = isApimartSeedanceFlash(settings.videoProvider, settings.videoModel);
     const secondaryToggles = `${!isSmartH3Video() ? renderVideoToggleControl('videoEnableUpsample', tr('smart.videoUpsample')) : ''}
-        ${!isSmartH3Video() ? renderVideoToggleControl('videoGenerateAudio', tr('smart.videoGenerateAudio')) : ''}
         ${!isSmartH3Video() ? renderVideoToggleControl('videoCameraFixed', tr('smart.videoCameraFixed')) : ''}
         ${renderVideoToggleControl('videoWatermark', tr('smart.videoWatermark'))}`;
     dynamicParams.innerHTML = `
@@ -2975,6 +2974,7 @@ function renderApiVideoParams(){
         ${renderVideoDurationControl()}
         ${renderVideoResolutionControl()}
         ${renderVideoAspectControl()}
+        ${!isSmartH3Video() ? renderVideoToggleControl('videoGenerateAudio', tr('smart.videoGenerateAudio')) : ''}
         ${renderVideoToggleControl('videoMultimodal', tr('smart.videoMultimodal'))}
         ${renderVideoToggleControl('videoUseFrameRoles', tr('smart.videoUseFrameRoles'))}
         ${!isSmartH3Video() ? renderVideoToggleControl('videoReturnLastFrame', tr('smart.videoReturnLastFrame')) : ''}

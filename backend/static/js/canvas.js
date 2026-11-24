@@ -3123,9 +3123,8 @@ function openLayersNodeMenu(nodeId, clientX, clientY){
 }
 async function layersExportPsd(nodeId){
     const node = nodes.find(n => n.id === nodeId);
-    const items = (node && (node.images || []))
-        .map(it => ({url: it.url, role: it.role || (Number(it.z_index) === 0 ? 'base' : 'layer'), z_index: it.z_index, bbox: it.bbox || null, name: it.name || ''}))
-        .filter(x => x.url);
+    const items = (node?.images || [])
+        .map(it => ({url: it.url, source_url: it.source_url, role: it.role || (Number(it.z_index) === 0 ? 'base' : 'layer'), z_index: it.z_index, bbox: it.bbox || null, name: it.name || ''}));
     if(!items.length){ alert(tr('canvas.outputDownloadEmpty')); return; }
     try {
         const res = await fetch('/api/canvas/layers-psd', {
@@ -3268,6 +3267,7 @@ async function performLayersSplit(node, imageUrl, size, opts={}){
             z_index: Number(it.z_index) >= 0 ? Number(it.z_index) : 0,
             layerName: it.name || '',
             description: it.description || '',
+            source_url: it.source_url || undefined,
             bbox: it.bounding_box || null,
             output_format: it.output_format || 'png',
             width: it.width || 0,

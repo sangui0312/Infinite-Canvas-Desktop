@@ -8873,7 +8873,7 @@ async def save_remote_video_to_output(url, prefix="video_", category="output", p
             raise HTTPException(status_code=502, detail=str(e)) from e
         return url
 
-async def save_remote_image_to_output(url, prefix="last_frame_", category="output"):
+async def save_remote_image_to_output(url, prefix="last_frame_", category="output", *, verify_image=False):
     if not url:
         return ""
     if url.startswith("/output/") or url.startswith("/assets/"):
@@ -8911,6 +8911,9 @@ async def save_remote_image_to_output(url, prefix="last_frame_", category="outpu
             path = output_path_for(filename, category)
             with open(path, "wb") as f:
                 f.write(response.content)
+            if verify_image:
+                with open_media_image(path) as image:
+                    image.load()
             if os.path.getsize(path) <= 0:
                 raise RuntimeError("empty image response")
             return output_url_for(filename, category)
@@ -11958,6 +11961,31 @@ def write_psd_bytes(width, height, layers):
     psd.write(buf)
     return buf.getvalue()
 
+async def read_psd_remote_layer(url):
+    parsed = urllib.parse.urlsplit(url)
+    if parsed.scheme != "https" or parsed.netloc.lower() != "getapib.org" or not parsed.path.startswith("/image/"):
+        raise ValueError("远程图层地址不受支持，请先将原图保存为本地素材")
+    limit = 32 * 1024 * 1024
+    async with httpx.AsyncClient(timeout=20, follow_redirects=False) as client:
+        for attempt in range(2):
+            try:
+                async with client.stream("GET", url) as response:
+                    response.raise_for_status()
+                    if response.status_code != 200:
+                        raise ValueError("远程服务未返回完整图片")
+                    content = bytearray()
+                    async for chunk in response.aiter_bytes():
+                        if len(content) + len(chunk) > limit:
+                            raise ValueError("远程图层超过 32 MiB")
+                        content.extend(chunk)
+                with Image.open(BytesIO(content)) as image:
+                    return image.convert("RGBA")
+            except (httpx.TransportError, OSError):
+                if attempt:
+                    raise
+    raise RuntimeError("无法读取远程图层")
+
+
 class LayersPsdRequest(BaseModel):
     items: List[Dict[str, Any]] = []
     filename: str = "layers.psd"
@@ -11975,19 +12003,28 @@ async def canvas_layers_psd(payload: LayersPsdRequest):
         raise HTTPException(status_code=400, detail="没有可导出的图层")
     loaded = []
     base_item = None
-    for raw in items:
+    for index, raw in enumerate(items):
         if not isinstance(raw, dict):
-            continue
+            raise HTTPException(400, f"第 {index + 1} 项图层记录无效")
         url = str(raw.get('url') or '').strip()
-        if not url:
-            continue
-        path = output_file_from_url(url)
-        if not path or not os.path.isfile(path):
-            continue
+        name = str(raw.get('name') or f"第 {index + 1} 项")
         try:
-            img = open_media_image(path).convert('RGBA')
-        except Exception:
-            continue
+            path = output_file_from_url(url)
+            try:
+                if not path or not os.path.isfile(path):
+                    raise FileNotFoundError("本地图层文件不存在")
+                with open_media_image(path) as source:
+                    img = source.convert('RGBA')
+            except (OSError, ValueError):
+                remote = str(raw.get('source_url') or (url if url.startswith('https://') else '')).strip()
+                if not remote:
+                    raise
+                img = await read_psd_remote_layer(remote)
+        except Exception as exc:
+            reason = f"远程服务 HTTP {exc.response.status_code}" if isinstance(exc, httpx.HTTPStatusError) else type(exc).__name__
+            if isinstance(exc, (FileNotFoundError, ValueError, OSError)):
+                reason = str(exc)
+            raise HTTPException(422, f"无法导出图层「{name}」：{reason}") from exc
         entry = {'image': img, 'url': url, 'role': str(raw.get('role') or '').lower(),
                  'z': int(raw.get('z_index') if raw.get('z_index') is not None else 0),
                  'bbox': raw.get('bbox') or None, 'name': str(raw.get('name') or 'layer')}
@@ -12016,6 +12053,13 @@ async def canvas_layers_psd(payload: LayersPsdRequest):
         placed.append({'image': img, 'left': left, 'top': top, 'name': entry['name'] or f"layer-{entry['z']}"})
     try:
         psd = write_psd_bytes(W, H, placed)
+        checked = _PsdFile.read(BytesIO(psd))
+        records = checked.layer_and_mask_info.layer_info.layer_records
+        expected = [(layer['top'], layer['left'], layer['top'] + layer['image'].height,
+                     layer['left'] + layer['image'].width, layer['name'][:255]) for layer in placed]
+        actual = [(r.top, r.left, r.bottom, r.right, next((block.name for block in r.blocks if isinstance(block, _PsdUnicodeLayerName)), r.name)) for r in records]
+        if (checked.width, checked.height) != (W, H) or actual != expected:
+            raise ValueError("PSD 回读的图层数量、名称或位置不一致")
     except Exception as exc:
         raise HTTPException(status_code=500, detail=f"PSD 生成失败：{exc}") from exc
     import time as _t
@@ -12098,10 +12142,10 @@ async def canvas_seedream_layer_split(payload: SeedreamLayerSplitRequest):
     meta_indexed_from_zero = len(layers_meta) >= len(urls)
     outputs = []
     for idx, u in enumerate(urls):
-        local = await save_remote_image_to_output(u)
+        local = await save_remote_image_to_output(u, verify_image=True)
         if not local or (str(local).startswith("http") and not str(local).startswith("/")):
             local = u if str(u).startswith("http") else local
-        meta = {"url": local, "kind": "image", "z_index": idx, "role": "base" if idx == 0 else "layer"}
+        meta = {"url": local, "source_url": u, "kind": "image", "z_index": idx, "role": "base" if idx == 0 else "layer"}
         if idx < len(sizes) and sizes[idx]:
             meta["size_label"] = str(sizes[idx])
         if idx < len(formats) and formats[idx]:
